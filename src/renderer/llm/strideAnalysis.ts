@@ -1,4 +1,4 @@
-import { ThreatListSchema } from '../model/threats'
+import { ThreatSchema, ThreatListSchema } from '../model/threats'
 import type { Threat } from '../model/threats'
 import type { Graph } from '../model/graph'
 import type { LLMClient, LLMMessage } from './llm'
@@ -14,8 +14,8 @@ Given a system architecture, identify security threats using the STRIDE framewor
 - DenialOfService: denying or degrading service to users
 - ElevationOfPrivilege: gaining capabilities without authorization
 
-Return ONLY a valid JSON array of threats matching this schema exactly:
-[{
+Return threats one per line. Each line must be a single valid JSON object matching this schema exactly:
+{
   "id": "<unique string>",
   "title": "<short threat title>",
   "category": "<Spoofing|Tampering|Repudiation|InformationDisclosure|DenialOfService|ElevationOfPrivilege>",
@@ -23,9 +23,9 @@ Return ONLY a valid JSON array of threats matching this schema exactly:
   "affectedId": "<id of the affected component or flow>",
   "severity": "<low|medium|high>",
   "mitigation": "<suggested mitigation or control>"
-}]
+}
 
-Return only JSON — no prose, no markdown fences.`
+Do not wrap in an array. Do not include any other text.`
 
 const serializeGraphForPrompt = (graph: Graph): string => {
   const zones = graph.zones.map(z => `  Zone: ${z.name} (id: ${z.id})`).join('\n')
@@ -42,23 +42,21 @@ export const buildStridePrompt = (graph: Graph, interviewTranscript?: LLMMessage
   return `${base}\n\nAdditional context from security interview with developers:\n${transcriptText}`
 }
 
-const extractJson = (text: string): string => {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  return fenced !== null ? fenced[1]!.trim() : text.trim()
+const parseSingleThreat = (line: string): Threat => {
+  const raw = JSON.parse(line) as Record<string, unknown>
+  if (!('id' in raw) || typeof raw['id'] !== 'string' || raw['id'].length === 0) {
+    raw['id'] = crypto.randomUUID()
+  }
+  return ThreatSchema.parse(raw)
 }
 
-export const parseThreatsResponse = (response: string): Threat[] => {
-  const json = extractJson(response)
-  const raw = JSON.parse(json) as unknown[]
-  const withIds = raw.map(item => {
-    const t = item as Record<string, unknown>
-    if (!('id' in t) || typeof t['id'] !== 'string' || t['id'].length === 0) {
-      return { ...t, id: crypto.randomUUID() }
-    }
-    return t
-  })
-  return ThreatListSchema.parse(withIds)
-}
+export const parseThreatsResponse = (response: string): Threat[] =>
+  response.split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .flatMap(line => {
+      try { return [parseSingleThreat(line)] } catch { return [] }
+    })
 
 export const generateThreats = async (
   client: LLMClient,
@@ -70,4 +68,56 @@ export const generateThreats = async (
     STRIDE_SYSTEM_PROMPT
   )
   return parseThreatsResponse(response)
+}
+
+export const generateThreatsStreaming = async (
+  client: LLMClient,
+  graph: Graph,
+  onThreat: (threat: Threat) => void,
+  interviewTranscript?: LLMMessage[]
+): Promise<Threat[]> => {
+  const prompt = buildStridePrompt(graph, interviewTranscript)
+  const threats: Threat[] = []
+
+  if (client.stream !== undefined) {
+    let buffer = ''
+    await client.stream(
+      [{ role: 'user', content: prompt }],
+      STRIDE_SYSTEM_PROMPT,
+      (chunk) => {
+        buffer += chunk
+        let newlinePos: number
+        while ((newlinePos = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlinePos).trim()
+          buffer = buffer.slice(newlinePos + 1)
+          if (line.length === 0) continue
+          try {
+            const threat = parseSingleThreat(line)
+            threats.push(threat)
+            onThreat(threat)
+          } catch { /* skip incomplete/invalid lines */ }
+        }
+      }
+    )
+    const remaining = buffer.trim()
+    if (remaining.length > 0) {
+      try {
+        const threat = parseSingleThreat(remaining)
+        threats.push(threat)
+        onThreat(threat)
+      } catch { /* skip */ }
+    }
+    return threats
+  }
+
+  const response = await client.complete(
+    [{ role: 'user', content: prompt }],
+    STRIDE_SYSTEM_PROMPT
+  )
+  const parsed = parseThreatsResponse(response)
+  for (const threat of parsed) {
+    threats.push(threat)
+    onThreat(threat)
+  }
+  return threats
 }

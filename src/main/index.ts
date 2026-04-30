@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, safeStorage } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 
@@ -50,13 +50,24 @@ ipcMain.handle('llm-complete', async (_event, { url, headers, body }: { url: str
 
 ipcMain.handle('save-settings', async (_event, json: string) => {
   const settingsPath = join(app.getPath('userData'), 'settings.json')
-  writeFileSync(settingsPath, json, 'utf-8')
+  const settings = JSON.parse(json) as Record<string, unknown>
+  if (typeof settings['apiKey'] === 'string' && safeStorage.isEncryptionAvailable()) {
+    settings['encryptedApiKey'] = safeStorage.encryptString(settings['apiKey']).toString('base64')
+    delete settings['apiKey']
+  }
+  writeFileSync(settingsPath, JSON.stringify(settings), 'utf-8')
 })
 
 ipcMain.handle('load-settings', async () => {
   const settingsPath = join(app.getPath('userData'), 'settings.json')
   try {
-    return readFileSync(settingsPath, 'utf-8')
+    const raw = readFileSync(settingsPath, 'utf-8')
+    const settings = JSON.parse(raw) as Record<string, unknown>
+    if (typeof settings['encryptedApiKey'] === 'string' && safeStorage.isEncryptionAvailable()) {
+      settings['apiKey'] = safeStorage.decryptString(Buffer.from(settings['encryptedApiKey'], 'base64'))
+      delete settings['encryptedApiKey']
+    }
+    return JSON.stringify(settings)
   } catch {
     return null
   }

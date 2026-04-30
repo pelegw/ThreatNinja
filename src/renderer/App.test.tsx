@@ -36,13 +36,12 @@ vi.mock('./llm/nlToGraph', async (importOriginal) => {
 
 vi.mock('./llm/strideAnalysis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./llm/strideAnalysis')>()
-  return { ...actual, generateThreats: vi.fn() }
+  return { ...actual, generateThreats: vi.fn(), generateThreatsStreaming: vi.fn() }
 })
 
 import { generateGraphFromDescription } from './llm/nlToGraph'
-import { generateThreats } from './llm/strideAnalysis'
+import { generateThreatsStreaming } from './llm/strideAnalysis'
 import { StrideCategory } from './model/threats'
-import type { Threat } from './model/threats'
 
 const mockElectronAPI = {
   saveGraph: vi.fn().mockResolvedValue(undefined),
@@ -147,14 +146,14 @@ describe('App — STRIDE analysis', () => {
   })
 
   it('opens ThreatsPanel after clicking Analyze and generation completes', async () => {
-    vi.mocked(generateThreats).mockResolvedValue(sampleThreats)
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => expect(screen.getByDisplayValue('SQL Injection')).toBeInTheDocument())
   })
 
   it('saves threats with the diagram when Save is clicked', async () => {
-    vi.mocked(generateThreats).mockResolvedValue(sampleThreats)
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
@@ -178,7 +177,7 @@ describe('App — STRIDE analysis', () => {
   })
 
   it('shows threats inline after analysis completes', async () => {
-    vi.mocked(generateThreats).mockResolvedValue(sampleThreats)
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => expect(screen.getByDisplayValue('SQL Injection')).toBeInTheDocument())
@@ -194,7 +193,7 @@ describe('App — STRIDE analysis', () => {
       ...sampleThreats,
       { id: 't2', title: 'Identity Theft', category: StrideCategory.Spoofing, description: 'd', affectedId: 'c2', severity: 'low' as const }
     ]
-    vi.mocked(generateThreats).mockResolvedValue(twoThreats)
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { twoThreats.forEach(onThreat); return twoThreats })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
@@ -210,7 +209,7 @@ describe('App — STRIDE analysis', () => {
       ...sampleThreats,
       { id: 't2', title: 'Identity Theft', category: StrideCategory.Spoofing, description: 'd', affectedId: 'c2', severity: 'low' as const }
     ]
-    vi.mocked(generateThreats).mockResolvedValue(twoThreats)
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { twoThreats.forEach(onThreat); return twoThreats })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
@@ -222,7 +221,7 @@ describe('App — STRIDE analysis', () => {
   })
 
   it('clears the selection when canvas background is tapped', async () => {
-    vi.mocked(generateThreats).mockResolvedValue(sampleThreats)
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
@@ -280,14 +279,14 @@ describe('App — Error handling', () => {
   })
 
   it('shows an error message when STRIDE analysis fails', async () => {
-    vi.mocked(generateThreats).mockRejectedValue(new Error('API error'))
+    vi.mocked(generateThreatsStreaming).mockRejectedValue(new Error('API error'))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
   })
 
   it('dismisses the error message when it is clicked', async () => {
-    vi.mocked(generateThreats).mockRejectedValue(new Error('API error'))
+    vi.mocked(generateThreatsStreaming).mockRejectedValue(new Error('API error'))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => screen.getByRole('alert'))
@@ -308,17 +307,14 @@ describe('App — Analyze loading state', () => {
   })
 
   it('disables the Analyze button while analysis is in progress', async () => {
-    let resolveAnalyze!: (t: typeof sampleThreatsForLoading) => void
-    const sampleThreatsForLoading = [
-      { id: 't1', title: 'SQL Injection', category: StrideCategory.Tampering, description: 'desc', affectedId: 'c1', severity: 'high' as const }
-    ]
-    vi.mocked(generateThreats).mockReturnValue(
-      new Promise(res => { resolveAnalyze = res })
+    let resolveAnalyze!: () => void
+    vi.mocked(generateThreatsStreaming).mockReturnValue(
+      new Promise(res => { resolveAnalyze = () => res([]) })
     )
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => expect(screen.getByRole('button', { name: /analyz/i })).toBeDisabled())
-    resolveAnalyze(sampleThreatsForLoading)
+    resolveAnalyze()
     await waitFor(() => expect(screen.getByRole('button', { name: /analyze/i })).not.toBeDisabled())
   })
 })
@@ -522,12 +518,12 @@ describe('App — Loading indicator', () => {
   })
 
   it('shows a loading indicator while analysis is in progress', async () => {
-    let resolveAnalyze!: (t: Threat[]) => void
-    vi.mocked(generateThreats).mockReturnValue(new Promise(res => { resolveAnalyze = res }))
+    let resolveAnalyze!: () => void
+    vi.mocked(generateThreatsStreaming).mockReturnValue(new Promise(res => { resolveAnalyze = () => res([]) }))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
     await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
-    resolveAnalyze([])
+    resolveAnalyze()
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
   })
 

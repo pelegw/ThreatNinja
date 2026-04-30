@@ -26,6 +26,7 @@ export type LLMMessage = z.infer<typeof LLMMessageSchema>
 
 export type LLMClient = {
   complete: (messages: LLMMessage[], system: string) => Promise<string>
+  stream?: (messages: LLMMessage[], system: string, onChunk: (chunk: string) => void) => Promise<string>
 }
 
 type RequestInput = { messages: LLMMessage[]; system: string; model?: string }
@@ -63,6 +64,59 @@ const httpPost = async (url: string, headers: Record<string, string>, body: stri
   return fetch(url, { method: 'POST', headers, body })
 }
 
+const extractAnthropicText = (data: unknown): string | null => {
+  const d = data as { type?: string; delta?: { type?: string; text?: string } }
+  if (d.type !== 'content_block_delta' || d.delta?.type !== 'text_delta') return null
+  return d.delta.text ?? null
+}
+
+const extractOpenAIText = (data: unknown): string | null => {
+  const d = data as { choices?: { delta?: { content?: string | null } }[] }
+  const content = d.choices?.[0]?.delta?.content
+  return typeof content === 'string' ? content : null
+}
+
+const readSSEStream = async (
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  extractText: (data: unknown) => string | null,
+  onChunk: (text: string) => void
+): Promise<string> => {
+  const response = await fetch(url, { method: 'POST', headers, body })
+  if (!response.ok) throw new Error(`LLM API error: ${response.status}`)
+  if (response.body === null) return ''
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let accumulated = ''
+  let buffer = ''
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let newlinePos: number
+    while ((newlinePos = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlinePos)
+      buffer = buffer.slice(newlinePos + 1)
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6).trim()
+      if (payload === '[DONE]') continue
+      try {
+        const text = extractText(JSON.parse(payload) as unknown)
+        if (text !== null) {
+          accumulated += text
+          onChunk(text)
+        }
+      } catch { /* skip malformed */ }
+    }
+  }
+
+  return accumulated
+}
+
 const anthropicClient = (apiKey: string, model?: string): LLMClient => ({
   complete: async (messages, system) => {
     const response = await httpPost(
@@ -73,7 +127,15 @@ const anthropicClient = (apiKey: string, model?: string): LLMClient => ({
     if (!response.ok) throw new Error(`Anthropic API error: ${response.status}`)
     const data = await response.json() as { content: { text: string }[] }
     return data.content[0]?.text ?? ''
-  }
+  },
+  stream: (messages, system, onChunk) =>
+    readSSEStream(
+      'https://api.anthropic.com/v1/messages',
+      { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      JSON.stringify({ ...formatAnthropicRequest({ messages, system, ...(model !== undefined ? { model } : {}) }), stream: true }),
+      extractAnthropicText,
+      onChunk
+    )
 })
 
 const openAICompatibleClient = (apiKey: string | undefined, endpoint: string, model?: string): LLMClient => ({
@@ -86,7 +148,15 @@ const openAICompatibleClient = (apiKey: string | undefined, endpoint: string, mo
     if (!response.ok) throw new Error(`LLM API error: ${response.status}`)
     const data = await response.json() as { choices: { message: { content: string } }[] }
     return data.choices[0]?.message.content ?? ''
-  }
+  },
+  stream: (messages, system, onChunk) =>
+    readSSEStream(
+      `${endpoint}/chat/completions`,
+      { 'Content-Type': 'application/json', ...(apiKey !== undefined ? { Authorization: `Bearer ${apiKey}` } : {}) },
+      JSON.stringify({ ...formatOpenAIRequest({ messages, system, ...(model !== undefined ? { model } : {}) }), stream: true }),
+      extractOpenAIText,
+      onChunk
+    )
 })
 
 export const createLLMClient = (settings: LLMSettings): LLMClient => {

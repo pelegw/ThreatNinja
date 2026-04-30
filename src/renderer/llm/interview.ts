@@ -48,6 +48,38 @@ export const continueInterview = async (
   return [...updated, { role: 'assistant', content: nextQuestion }]
 }
 
+export const startInterviewStreaming = async (
+  client: LLMClient,
+  graph: Graph,
+  onChunk: (chunk: string) => void
+): Promise<LLMMessage[]> => {
+  const bootstrap: LLMMessage = { role: 'user', content: buildInterviewStartPrompt(graph) }
+  const messages: LLMMessage[] = [bootstrap]
+  if (client.stream !== undefined) {
+    const text = await client.stream(messages, INTERVIEW_SYSTEM_PROMPT, onChunk)
+    return [...messages, { role: 'assistant', content: text }]
+  }
+  const text = await client.complete(messages, INTERVIEW_SYSTEM_PROMPT)
+  onChunk(text)
+  return [...messages, { role: 'assistant', content: text }]
+}
+
+export const continueInterviewStreaming = async (
+  client: LLMClient,
+  history: LLMMessage[],
+  userAnswer: string,
+  onChunk: (chunk: string) => void
+): Promise<LLMMessage[]> => {
+  const updated: LLMMessage[] = [...history, { role: 'user', content: userAnswer }]
+  if (client.stream !== undefined) {
+    const text = await client.stream(updated, INTERVIEW_SYSTEM_PROMPT, onChunk)
+    return [...updated, { role: 'assistant', content: text }]
+  }
+  const text = await client.complete(updated, INTERVIEW_SYSTEM_PROMPT)
+  onChunk(text)
+  return [...updated, { role: 'assistant', content: text }]
+}
+
 export const formatTranscriptForStride = (messages: LLMMessage[]): string =>
   messages.slice(1).map(m =>
     m.role === 'assistant' ? `Researcher: ${m.content}` : `Developer: ${m.content}`

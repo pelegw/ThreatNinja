@@ -269,6 +269,139 @@ describe('createLLMClient', () => {
   })
 })
 
+describe('createLLMClient — stream method', () => {
+  const makeSSEResponse = (lines: string[], ok = true) => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const line of lines) {
+          controller.enqueue(encoder.encode(line + '\n'))
+        }
+        controller.close()
+      }
+    })
+    return { ok, status: ok ? 200 : 401, body }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn())
+    vi.stubGlobal('window', {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('Anthropic: calls onChunk for each text delta', async () => {
+    const lines = [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" World"}}',
+      'data: {"type":"message_stop"}'
+    ]
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk-ant' })
+    const chunks: string[] = []
+    await client.stream!([{ role: 'user', content: 'hi' }], 'system', chunk => chunks.push(chunk))
+    expect(chunks).toEqual(['Hello', ' World'])
+  })
+
+  it('Anthropic: returns the full accumulated text', async () => {
+    const lines = [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" World"}}'
+    ]
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk-ant' })
+    const result = await client.stream!([], '', () => {})
+    expect(result).toBe('Hello World')
+  })
+
+  it('Anthropic: throws on non-ok response', async () => {
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse([], false) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'bad' })
+    await expect(client.stream!([], '', () => {})).rejects.toThrow('401')
+  })
+
+  it('OpenAI: calls onChunk for each text delta', async () => {
+    const lines = [
+      'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+      'data: {"choices":[{"delta":{"content":" World"},"finish_reason":null}]}',
+      'data: [DONE]'
+    ]
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.OpenAI, apiKey: 'sk-oai' })
+    const chunks: string[] = []
+    await client.stream!([], '', chunk => chunks.push(chunk))
+    expect(chunks).toEqual(['Hello', ' World'])
+  })
+
+  it('OpenAI: returns the full accumulated text', async () => {
+    const lines = [
+      'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+      'data: {"choices":[{"delta":{"content":" World"},"finish_reason":null}]}'
+    ]
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.OpenAI, apiKey: 'sk-oai' })
+    const result = await client.stream!([], '', () => {})
+    expect(result).toBe('Hello World')
+  })
+
+  it('uses fetch directly even when electronAPI is present', async () => {
+    const llmComplete = vi.fn()
+    vi.stubGlobal('window', { electronAPI: { llmComplete } })
+    const lines = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}']
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk-ant' })
+    await client.stream!([], '', () => {})
+    expect(fetch).toHaveBeenCalled()
+    expect(llmComplete).not.toHaveBeenCalled()
+  })
+
+  it('includes stream: true in the Anthropic request body', async () => {
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse([]) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
+    await client.stream!([], '', () => {})
+    const [, init] = vi.mocked(fetch).mock.calls[0]!
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.stream).toBe(true)
+  })
+
+  it('includes stream: true in the OpenAI request body', async () => {
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse([]) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.OpenAI, apiKey: 'sk' })
+    await client.stream!([], '', () => {})
+    const [, init] = vi.mocked(fetch).mock.calls[0]!
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.stream).toBe(true)
+  })
+
+  it('skips non-data SSE lines without calling onChunk', async () => {
+    const lines = [
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}',
+      ''
+    ]
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
+    const chunks: string[] = []
+    await client.stream!([], '', chunk => chunks.push(chunk))
+    expect(chunks).toEqual(['hi'])
+  })
+
+  it('skips malformed data lines without throwing', async () => {
+    const lines = [
+      'data: not-valid-json',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}'
+    ]
+    vi.mocked(fetch).mockResolvedValue(makeSSEResponse(lines) as unknown as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
+    const chunks: string[] = []
+    const result = await client.stream!([], '', chunk => chunks.push(chunk))
+    expect(result).toBe('ok')
+    expect(chunks).toEqual(['ok'])
+  })
+})
+
 describe('createLLMClient — Electron IPC path', () => {
   const llmComplete = vi.fn()
 

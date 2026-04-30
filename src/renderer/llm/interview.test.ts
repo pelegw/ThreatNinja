@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildInterviewStartPrompt, startInterview, continueInterview, formatTranscriptForStride } from './interview'
+import { buildInterviewStartPrompt, startInterview, continueInterview, formatTranscriptForStride, startInterviewStreaming, continueInterviewStreaming } from './interview'
 import type { LLMClient, LLMMessage } from './llm'
 import { ComponentType, FlowDirection, GraphSchema } from '../model/graph'
 
@@ -95,6 +95,102 @@ describe('continueInterview', () => {
   it('propagates errors thrown by client.complete', async () => {
     const client: LLMClient = { complete: vi.fn().mockRejectedValue(new Error('Network error')) }
     await expect(continueInterview(client, seedHistory, 'Answer')).rejects.toThrow('Network error')
+  })
+})
+
+describe('startInterviewStreaming', () => {
+  it('calls onChunk with each streamed chunk when client.stream is available', async () => {
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockImplementation(async (_messages: unknown, _system: unknown, onChunk: (c: string) => void) => {
+        onChunk('What ')
+        onChunk('auth?')
+        return 'What auth?'
+      })
+    }
+    const chunks: string[] = []
+    await startInterviewStreaming(client, sampleGraph, chunk => chunks.push(chunk))
+    expect(chunks).toEqual(['What ', 'auth?'])
+    expect(client.complete).not.toHaveBeenCalled()
+  })
+
+  it('returns history with accumulated text as the assistant message', async () => {
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockResolvedValue('What auth?')
+    }
+    const history = await startInterviewStreaming(client, sampleGraph, () => {})
+    expect(history).toHaveLength(2)
+    expect(history[1]!.role).toBe('assistant')
+    expect(history[1]!.content).toBe('What auth?')
+  })
+
+  it('falls back to client.complete when stream is absent and calls onChunk once with full text', async () => {
+    const client = makeClient('What auth mechanism?')
+    const chunks: string[] = []
+    const history = await startInterviewStreaming(client, sampleGraph, chunk => chunks.push(chunk))
+    expect(client.complete).toHaveBeenCalled()
+    expect(chunks).toEqual(['What auth mechanism?'])
+    expect(history[1]!.content).toBe('What auth mechanism?')
+  })
+
+  it('propagates errors from client.stream', async () => {
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockRejectedValue(new Error('stream error'))
+    }
+    await expect(startInterviewStreaming(client, sampleGraph, () => {})).rejects.toThrow('stream error')
+  })
+})
+
+describe('continueInterviewStreaming', () => {
+  const seedHistory: LLMMessage[] = [
+    { role: 'user', content: 'bootstrap prompt' },
+    { role: 'assistant', content: 'First question?' }
+  ]
+
+  it('calls onChunk with each streamed chunk when client.stream is available', async () => {
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockImplementation(async (_messages: unknown, _system: unknown, onChunk: (c: string) => void) => {
+        onChunk('Follow ')
+        onChunk('up?')
+        return 'Follow up?'
+      })
+    }
+    const chunks: string[] = []
+    await continueInterviewStreaming(client, seedHistory, 'My answer', chunk => chunks.push(chunk))
+    expect(chunks).toEqual(['Follow ', 'up?'])
+    expect(client.complete).not.toHaveBeenCalled()
+  })
+
+  it('returns updated history with streamed response as assistant message', async () => {
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockResolvedValue('Follow up?')
+    }
+    const history = await continueInterviewStreaming(client, seedHistory, 'My answer', () => {})
+    expect(history).toHaveLength(4)
+    expect(history[2]!).toEqual({ role: 'user', content: 'My answer' })
+    expect(history[3]!).toEqual({ role: 'assistant', content: 'Follow up?' })
+  })
+
+  it('falls back to client.complete when stream is absent and calls onChunk once with full text', async () => {
+    const client = makeClient('Next question?')
+    const chunks: string[] = []
+    const history = await continueInterviewStreaming(client, seedHistory, 'Answer', chunk => chunks.push(chunk))
+    expect(client.complete).toHaveBeenCalled()
+    expect(chunks).toEqual(['Next question?'])
+    expect(history[3]!.content).toBe('Next question?')
+  })
+
+  it('does not mutate the original history array', async () => {
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockResolvedValue('Q?')
+    }
+    await continueInterviewStreaming(client, seedHistory, 'Answer', () => {})
+    expect(seedHistory).toHaveLength(2)
   })
 })
 

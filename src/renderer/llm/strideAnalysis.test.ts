@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildStridePrompt, parseThreatsResponse, generateThreats } from './strideAnalysis'
+import { buildStridePrompt, parseThreatsResponse, generateThreats, generateThreatsStreaming } from './strideAnalysis'
 import { StrideCategory } from '../model/threats'
 import { ComponentType, FlowDirection } from '../model/graph'
 import type { Graph } from '../model/graph'
@@ -123,7 +123,8 @@ describe('generateThreats — with interview transcript', () => {
   ]
 
   it('includes transcript context in the prompt sent to the LLM', async () => {
-    const client: LLMClient = { complete: vi.fn().mockResolvedValue(JSON.stringify(validThreats)) }
+    const jsonLines = validThreats.map(t => JSON.stringify(t)).join('\n')
+    const client: LLMClient = { complete: vi.fn().mockResolvedValue(jsonLines) }
     await generateThreats(client, sampleGraph, transcript)
     const [messages] = vi.mocked(client.complete).mock.calls[0]!
     expect(messages[0]!.content).toContain('What auth do you use?')
@@ -131,115 +132,136 @@ describe('generateThreats — with interview transcript', () => {
 })
 
 describe('parseThreatsResponse', () => {
-  const validJson = JSON.stringify(validThreats)
+  const validJsonLines = validThreats.map(t => JSON.stringify(t)).join('\n')
 
-  it('parses a valid JSON threat list', () => {
-    const threats = parseThreatsResponse(validJson)
+  it('parses a valid JSON Lines threat list', () => {
+    const threats = parseThreatsResponse(validJsonLines)
     expect(threats).toHaveLength(2)
     expect(threats[0]!.category).toBe(StrideCategory.Spoofing)
   })
 
-  it('extracts JSON embedded in markdown code fences', () => {
-    const fenced = '```json\n' + validJson + '\n```'
-    expect(parseThreatsResponse(fenced)).toHaveLength(2)
+  it('skips invalid lines without throwing', () => {
+    const withGarbage = 'not-json\n' + validJsonLines
+    expect(parseThreatsResponse(withGarbage)).toHaveLength(2)
   })
 
-  it('extracts JSON embedded in plain code fences', () => {
-    const fenced = '```\n' + validJson + '\n```'
-    expect(parseThreatsResponse(fenced)).toHaveLength(2)
+  it('returns empty array when no valid threat lines are present', () => {
+    expect(parseThreatsResponse('not json\nalso not json')).toEqual([])
   })
 
-  it('throws when the response is not valid JSON', () => {
-    expect(() => parseThreatsResponse('not json')).toThrow()
-  })
-
-  it('throws when the JSON does not match the threat list schema', () => {
-    expect(() => parseThreatsResponse(JSON.stringify([{ id: 't1' }]))).toThrow()
-  })
-
-  it('parses an empty threat list', () => {
-    expect(parseThreatsResponse('[]')).toEqual([])
+  it('returns empty array for blank input', () => {
+    expect(parseThreatsResponse('')).toEqual([])
   })
 
   it('generates ids for threats missing an id', () => {
-    const noId = JSON.stringify([
-      { title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' }
-    ])
+    const noId = JSON.stringify({ title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' })
     const threats = parseThreatsResponse(noId)
     expect(threats[0]!.id.length).toBeGreaterThan(0)
   })
 
   it('preserves an existing non-empty string id', () => {
-    const withId = JSON.stringify([
-      { id: 'my-threat-id', title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' }
-    ])
+    const withId = JSON.stringify({ id: 'my-threat-id', title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' })
     expect(parseThreatsResponse(withId)[0]!.id).toBe('my-threat-id')
   })
 
   it('generates an id when the LLM provides an empty string id', () => {
-    const emptyId = JSON.stringify([
-      { id: '', title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' }
-    ])
+    const emptyId = JSON.stringify({ id: '', title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' })
     expect(parseThreatsResponse(emptyId)[0]!.id.length).toBeGreaterThan(0)
   })
 
   it('generates an id when the LLM provides a numeric id', () => {
-    const numericId = JSON.stringify([
-      { id: 42, title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' }
-    ])
+    const numericId = JSON.stringify({ id: 42, title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' })
     expect(parseThreatsResponse(numericId)[0]!.id.length).toBeGreaterThan(0)
   })
 
   it('preserves the mitigation field when present', () => {
-    const withMitigation = JSON.stringify([{
-      id: 't1', title: 'A', category: StrideCategory.Spoofing,
-      description: 'x', affectedId: 'c1', severity: 'low',
-      mitigation: 'Use mTLS'
-    }])
+    const withMitigation = JSON.stringify({ id: 't1', title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low', mitigation: 'Use mTLS' })
     expect(parseThreatsResponse(withMitigation)[0]!.mitigation).toBe('Use mTLS')
   })
 
   it('parses a threat without a mitigation field', () => {
-    const noMitigation = JSON.stringify([{
-      id: 't1', title: 'A', category: StrideCategory.Spoofing,
-      description: 'x', affectedId: 'c1', severity: 'low'
-    }])
-    const threats = parseThreatsResponse(noMitigation)
-    expect(threats[0]!.mitigation).toBeUndefined()
+    const noMitigation = JSON.stringify({ id: 't1', title: 'A', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'low' })
+    expect(parseThreatsResponse(noMitigation)[0]!.mitigation).toBeUndefined()
   })
 
-  it('strips leading and trailing whitespace from unfenced JSON', () => {
-    const padded = '  \n' + JSON.stringify(validThreats) + '\n  '
-    expect(parseThreatsResponse(padded)).toHaveLength(2)
+  it('ignores blank lines between valid JSON Lines', () => {
+    const withBlanks = validThreats.map(t => JSON.stringify(t)).join('\n\n')
+    expect(parseThreatsResponse(withBlanks)).toHaveLength(2)
+  })
+})
+
+describe('generateThreatsStreaming', () => {
+  const makeStreamingClient = (lines: string[]): LLMClient => ({
+    complete: vi.fn(),
+    stream: vi.fn().mockImplementation(async (_messages: unknown, _system: unknown, onChunk: (c: string) => void) => {
+      const text = lines.join('\n')
+      onChunk(text)
+      return text
+    })
   })
 
-  it('handles fences with spaces between the language tag and JSON content', () => {
-    const spaced = '```json   \n' + JSON.stringify(validThreats) + '\n```'
-    expect(parseThreatsResponse(spaced)).toHaveLength(2)
+  it('calls onThreat for each valid threat line when client.stream is present', async () => {
+    const client = makeStreamingClient(validThreats.map(t => JSON.stringify(t)))
+    const received: unknown[] = []
+    await generateThreatsStreaming(client, sampleGraph, t => received.push(t))
+    expect(received).toHaveLength(2)
+    expect(client.complete).not.toHaveBeenCalled()
+  })
+
+  it('returns the full threat list', async () => {
+    const client = makeStreamingClient(validThreats.map(t => JSON.stringify(t)))
+    const result = await generateThreatsStreaming(client, sampleGraph, () => {})
+    expect(result).toHaveLength(2)
+    expect(result[0]!.title).toBe('Spoofing API')
+  })
+
+  it('falls back to client.complete when stream is absent and calls onThreat for each threat', async () => {
+    const jsonLines = validThreats.map(t => JSON.stringify(t)).join('\n')
+    const client: LLMClient = { complete: vi.fn().mockResolvedValue(jsonLines) }
+    const received: unknown[] = []
+    await generateThreatsStreaming(client, sampleGraph, t => received.push(t))
+    expect(client.complete).toHaveBeenCalled()
+    expect(received).toHaveLength(2)
+  })
+
+  it('passes interview transcript context when provided', async () => {
+    const transcript: LLMMessage[] = [
+      { role: 'user', content: 'bootstrap' },
+      { role: 'assistant', content: 'What auth?' },
+      { role: 'user', content: 'JWT' }
+    ]
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockResolvedValue('')
+    }
+    await generateThreatsStreaming(client, sampleGraph, () => {}, transcript)
+    const [messages] = vi.mocked(client.stream!).mock.calls[0]!
+    expect(messages[0]!.content).toContain('What auth?')
   })
 })
 
 describe('generateThreats', () => {
+  const jsonLines = validThreats.map(t => JSON.stringify(t)).join('\n')
   const makeClient = (response: string): LLMClient => ({
     complete: vi.fn().mockResolvedValue(response)
   })
 
   it('calls client.complete with graph details as user message', async () => {
-    const client = makeClient(JSON.stringify(validThreats))
+    const client = makeClient(jsonLines)
     await generateThreats(client, sampleGraph)
     const [messages] = vi.mocked(client.complete).mock.calls[0]!
     expect(messages).toEqual([{ role: 'user', content: expect.stringContaining('My System') }])
   })
 
   it('passes a non-empty system prompt', async () => {
-    const client = makeClient(JSON.stringify(validThreats))
+    const client = makeClient(jsonLines)
     await generateThreats(client, sampleGraph)
     const [, system] = vi.mocked(client.complete).mock.calls[0]!
     expect((system as string).length).toBeGreaterThan(0)
   })
 
   it('returns parsed threats from the LLM response', async () => {
-    const client = makeClient(JSON.stringify(validThreats))
+    const client = makeClient(jsonLines)
     const threats = await generateThreats(client, sampleGraph)
     expect(threats).toHaveLength(2)
     expect(threats[0]!.title).toBe('Spoofing API')

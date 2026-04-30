@@ -14,8 +14,8 @@ import ContextMenu from './ui/ContextMenu'
 import { LLMProvider, LLMSettingsSchema, createLLMClient } from './llm/llm'
 import type { LLMSettings, LLMMessage } from './llm/llm'
 import { generateGraphFromDescription } from './llm/nlToGraph'
-import { generateThreats } from './llm/strideAnalysis'
-import { startInterview, continueInterview } from './llm/interview'
+import { generateThreatsStreaming } from './llm/strideAnalysis'
+import { startInterviewStreaming, continueInterviewStreaming } from './llm/interview'
 import InterviewPanel from './ui/InterviewPanel'
 import type { ThreatList } from './model/threats'
 import { exportToPng, exportToSvg, exportToJson } from './canvas/export'
@@ -176,11 +176,16 @@ export default function App(): JSX.Element {
 
   const handleAnalyze = useCallback(async () => {
     setIsAnalyzing(true)
+    setThreats([])
     try {
       const client = createLLMClient(settings)
       const iv = interviewMessagesRef.current
-      const result = await generateThreats(client, graphRef.current, iv.length > 0 ? iv : undefined)
-      setThreats(result)
+      await generateThreatsStreaming(
+        client,
+        graphRef.current,
+        (threat) => { setThreats(prev => [...(prev ?? []), threat]) },
+        iv.length > 0 ? iv : undefined
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Analysis failed')
     } finally {
@@ -194,21 +199,51 @@ export default function App(): JSX.Element {
     setSelectedElementId(null)
     if (interviewMessagesRef.current.length > 0) return
     setIsInterviewing(true)
+    setInterviewMessages([
+      { role: 'user', content: '' },
+      { role: 'assistant', content: '' }
+    ])
     try {
-      const messages = await startInterview(createLLMClient(settings), graphRef.current)
+      const messages = await startInterviewStreaming(
+        createLLMClient(settings),
+        graphRef.current,
+        (chunk) => {
+          setInterviewMessages(prev => {
+            const last = prev[prev.length - 1]!
+            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
+          })
+        }
+      )
       setInterviewMessages(messages)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Interview failed')
       setShowInterview(false)
+      setInterviewMessages([])
     } finally {
       setIsInterviewing(false)
     }
   }, [settings])
 
   const handleInterviewSend = useCallback(async (answer: string) => {
+    const history = interviewMessagesRef.current
     setIsInterviewing(true)
+    setInterviewMessages(prev => [
+      ...prev,
+      { role: 'user', content: answer },
+      { role: 'assistant', content: '' }
+    ])
     try {
-      const updated = await continueInterview(createLLMClient(settings), interviewMessagesRef.current, answer)
+      const updated = await continueInterviewStreaming(
+        createLLMClient(settings),
+        history,
+        answer,
+        (chunk) => {
+          setInterviewMessages(prev => {
+            const last = prev[prev.length - 1]!
+            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
+          })
+        }
+      )
       setInterviewMessages(updated)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Interview failed')
@@ -218,14 +253,27 @@ export default function App(): JSX.Element {
   }, [settings])
 
   const handleInterviewRestart = useCallback(async () => {
-    setInterviewMessages([])
     setIsInterviewing(true)
+    setInterviewMessages([
+      { role: 'user', content: '' },
+      { role: 'assistant', content: '' }
+    ])
     try {
-      const messages = await startInterview(createLLMClient(settings), graphRef.current)
+      const messages = await startInterviewStreaming(
+        createLLMClient(settings),
+        graphRef.current,
+        (chunk) => {
+          setInterviewMessages(prev => {
+            const last = prev[prev.length - 1]!
+            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
+          })
+        }
+      )
       setInterviewMessages(messages)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Interview failed')
       setShowInterview(false)
+      setInterviewMessages([])
     } finally {
       setIsInterviewing(false)
     }
