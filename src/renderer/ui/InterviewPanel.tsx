@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { LLMMessage } from '../llm/llm'
+import { useTheme, fonts } from './tokens'
 
 type Props = {
   messages: LLMMessage[]
@@ -12,6 +13,7 @@ type Props = {
 export default function InterviewPanel({ messages, onSend, onClose, onRestart, isLoading }: Props): JSX.Element {
   const [input, setInput] = useState('')
   const threadRef = useRef<HTMLDivElement>(null)
+  const t = useTheme()
 
   const canSend = input.trim().length > 0 && !isLoading
 
@@ -37,130 +39,110 @@ export default function InterviewPanel({ messages, onSend, onClose, onRestart, i
   const visibleMessages = messages.slice(1)
 
   return (
-    <div style={panelStyle}>
-      <div style={headerStyle}>
-        <span style={titleStyle}>Interview</span>
-        <button onClick={onClose} style={closeBtnStyle} aria-label="Close">✕</button>
+    <div style={{ width: '100%', height: '100%', background: t.bgAlt, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{
+        padding: '16px 20px 14px', borderBottom: `1px solid ${t.border}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
+      }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: t.text, letterSpacing: -0.2 }}>Interview</div>
+          <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>
+            {visibleMessages.length} questions &middot; {isLoading ? 'thinking' : 'in progress'}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {isLoading && (
+            <div style={{
+              padding: '3px 8px', background: t.accentBg, color: t.accentDim,
+              fontSize: 11, fontWeight: 600, borderRadius: 4, letterSpacing: 0.02,
+            }}>LIVE</div>
+          )}
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: t.textDim, cursor: 'pointer', fontSize: 16, padding: '0 4px' }} aria-label="Close">✕</button>
+        </div>
       </div>
 
-      <div ref={threadRef} style={threadStyle}>
+      <div ref={threadRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
         {visibleMessages.map((msg, i) => (
-          <div key={i} style={msg.role === 'assistant' ? researcherRowStyle : developerRowStyle}>
-            <div style={msg.role === 'assistant' ? researcherLabelStyle : developerLabelStyle}>
-              {msg.role === 'assistant' ? 'Researcher' : 'You'}
+          <div key={i} style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: 11,
+                background: msg.role === 'assistant' ? t.accent : '#a78bfa',
+                color: '#fff', fontSize: 10, fontWeight: 700,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>{msg.role === 'assistant' ? 'TN' : 'You'}</div>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: t.text }}>
+                {msg.role === 'assistant' ? 'Threat Ninja' : 'You'}
+              </span>
+              <span style={{ fontSize: 11, color: t.textDim }}>&middot; just now</span>
             </div>
-            <div style={msg.role === 'assistant' ? researcherBubbleStyle : developerBubbleStyle}>
-              {msg.content}
-            </div>
+            <div style={{
+              fontSize: 13, lineHeight: 1.55, color: t.text,
+              padding: msg.role === 'assistant' ? '10px 12px' : 0,
+              background: msg.role === 'assistant' ? t.bgInset : 'transparent',
+              border: msg.role === 'assistant' ? `1px solid ${t.border}` : 'none',
+              borderRadius: 8,
+              marginLeft: 30,
+            }}>{msg.content}</div>
           </div>
         ))}
         {isLoading && (
-          <div style={researcherRowStyle}>
-            <div style={researcherLabelStyle}>Researcher</div>
-            <div style={{ ...researcherBubbleStyle, color: '#6060a0' }}>…</div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: 11, background: t.accent,
+                color: '#fff', fontSize: 10, fontWeight: 700,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>TN</div>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: t.text }}>Threat Ninja</span>
+            </div>
+            <div style={{
+              fontSize: 13, color: t.textDim, padding: '10px 12px',
+              background: t.bgInset, border: `1px solid ${t.border}`, borderRadius: 8, marginLeft: 30,
+            }}>…</div>
           </div>
         )}
       </div>
 
-      <div style={inputAreaStyle}>
-        <textarea
-          role="textbox"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Type your answer…"
-          rows={3}
-          style={textareaStyle}
-          disabled={isLoading}
-        />
-        <div style={buttonRowStyle}>
-          <button onClick={onRestart} style={restartBtnStyle} aria-label="Start Over">
-            Start Over
-          </button>
-          <button onClick={handleSend} disabled={!canSend} style={canSend ? sendBtnStyle : disabledSendBtnStyle} aria-label="Send">
-            {isLoading ? '…' : 'Send'}
-          </button>
+      <div style={{ borderTop: `1px solid ${t.border}`, padding: 16, flexShrink: 0 }}>
+        <div style={{
+          background: t.bgInset, border: `1px solid ${t.border}`, borderRadius: 10,
+          padding: '10px 12px', minHeight: 76, display: 'flex', flexDirection: 'column',
+        }}>
+          <textarea
+            role="textbox"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Type your answer…"
+            rows={3}
+            style={{
+              background: 'transparent', border: 'none', color: t.text,
+              fontSize: 13, fontFamily: fonts.sans, resize: 'none', width: '100%',
+              outline: 'none', flex: 1, lineHeight: 1.55,
+            }}
+            disabled={isLoading}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+            <button onClick={onRestart} style={{
+              height: 24, border: 'none', background: 'transparent', color: t.textMuted,
+              cursor: 'pointer', borderRadius: 4, fontSize: 11, fontFamily: fonts.sans,
+            }} aria-label="Start Over">Start Over</button>
+            <div style={{ flex: 1 }} />
+            <button onClick={handleSend} disabled={!canSend} aria-label="Send" style={{
+              height: 26, padding: '0 12px',
+              background: canSend ? t.text : t.bgInset,
+              border: 'none',
+              color: canSend ? t.bgAlt : t.textDim,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 500,
+              cursor: canSend ? 'pointer' : 'not-allowed', borderRadius: 6,
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}>
+              {isLoading ? '…' : 'Send'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
   )
-}
-
-const panelStyle: React.CSSProperties = {
-  width: '100%', height: '100%', background: '#16162a',
-  display: 'flex', flexDirection: 'column', overflow: 'hidden'
-}
-
-const headerStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  padding: '12px 16px', borderBottom: '1px solid #3a3a6e', flexShrink: 0
-}
-
-const titleStyle: React.CSSProperties = {
-  fontSize: '13px', fontWeight: 600, color: '#a0a0d0', textTransform: 'uppercase', letterSpacing: '0.05em'
-}
-
-const closeBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: '#6060a0', cursor: 'pointer', fontSize: '16px', padding: '0 4px'
-}
-
-const threadStyle: React.CSSProperties = {
-  flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '12px'
-}
-
-const researcherRowStyle: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px'
-}
-
-const developerRowStyle: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px'
-}
-
-const researcherLabelStyle: React.CSSProperties = {
-  fontSize: '10px', color: '#6060a0', textTransform: 'uppercase', letterSpacing: '0.05em'
-}
-
-const developerLabelStyle: React.CSSProperties = {
-  fontSize: '10px', color: '#6060a0', textTransform: 'uppercase', letterSpacing: '0.05em'
-}
-
-const researcherBubbleStyle: React.CSSProperties = {
-  background: '#1e2a3e', color: '#a0d0ff', padding: '8px 12px',
-  borderRadius: '4px 12px 12px 4px', fontSize: '13px', maxWidth: '90%',
-  lineHeight: '1.5', wordBreak: 'break-word'
-}
-
-const developerBubbleStyle: React.CSSProperties = {
-  background: '#2a2a4e', color: '#e0e0ff', padding: '8px 12px',
-  borderRadius: '12px 4px 4px 12px', fontSize: '13px', maxWidth: '90%',
-  lineHeight: '1.5', wordBreak: 'break-word'
-}
-
-const inputAreaStyle: React.CSSProperties = {
-  padding: '12px 16px', borderTop: '1px solid #3a3a6e', flexShrink: 0,
-  display: 'flex', flexDirection: 'column', gap: '8px'
-}
-
-const textareaStyle: React.CSSProperties = {
-  padding: '8px', background: '#2a2a4e', color: '#e0e0ff',
-  border: '1px solid #4a4a7e', borderRadius: '4px', fontSize: '13px',
-  resize: 'none', fontFamily: 'inherit', width: '100%'
-}
-
-const buttonRowStyle: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', gap: '8px'
-}
-
-const sendBtnStyle: React.CSSProperties = {
-  padding: '6px 16px', background: '#4a4aee', color: '#fff',
-  border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px'
-}
-
-const disabledSendBtnStyle: React.CSSProperties = {
-  ...sendBtnStyle, background: '#2a2a6e', color: '#6060a0', cursor: 'not-allowed'
-}
-
-const restartBtnStyle: React.CSSProperties = {
-  padding: '6px 12px', background: '#2a2a4e', color: '#a0a0c0',
-  border: '1px solid #4a4a7e', borderRadius: '4px', cursor: 'pointer', fontSize: '12px'
 }

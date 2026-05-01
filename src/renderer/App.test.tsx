@@ -44,17 +44,31 @@ import { generateThreatsStreaming } from './llm/strideAnalysis'
 import { StrideCategory } from './model/threats'
 
 const mockElectronAPI = {
-  saveGraph: vi.fn().mockResolvedValue(undefined),
+  saveGraph: vi.fn().mockResolvedValue({ cancelled: false, filePath: '/test/diagram.tninja' }),
   loadGraph: vi.fn().mockResolvedValue({ cancelled: true }),
   saveSettings: vi.fn().mockResolvedValue(undefined),
   loadSettings: vi.fn().mockResolvedValue(null)
+}
+
+const openMenu = (name: string) => {
+  fireEvent.click(screen.getByRole('button', { name }))
+}
+
+const clickMenu = (dropdown: string, item: RegExp) => {
+  openMenu(dropdown)
+  fireEvent.click(screen.getByRole('menuitem', { name: item }))
+}
+
+const clickAnalyze = (which: RegExp = /^STRIDE$/i) => {
+  fireEvent.click(screen.getByRole('button', { name: /^analyze$/i }))
+  fireEvent.click(screen.getByRole('menuitem', { name: which }))
 }
 
 const minimalGraph: Graph = {
   id: 'g-test',
   name: 'Test System',
   zones: [{ id: 'z1', name: 'Internal' }],
-  components: [{ id: 'c1', name: 'API', type: ComponentType.Service, zoneId: 'z1' }],
+  components: [{ id: 'c1', name: 'API', type: ComponentType.Process, zoneId: 'z1' }],
   flows: [{ id: 'f1', name: 'Call', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }]
 }
 
@@ -96,7 +110,8 @@ describe('App', () => {
     await waitFor(() =>
       expect(generateGraphFromDescription).toHaveBeenCalledWith(
         expect.any(Object),
-        'A simple API'
+        'A simple API',
+        undefined
       )
     )
   })
@@ -148,16 +163,16 @@ describe('App — STRIDE analysis', () => {
   it('opens ThreatsPanel after clicking Analyze and generation completes', async () => {
     vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => expect(screen.getByDisplayValue('SQL Injection')).toBeInTheDocument())
   })
 
   it('saves threats with the diagram when Save is clicked', async () => {
     vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    clickMenu('File', /^save$/i)
     await waitFor(() => expect(mockElectronAPI.saveGraph).toHaveBeenCalled())
     const saved = JSON.parse(mockElectronAPI.saveGraph.mock.calls[0][0] as string) as { threats?: unknown }
     expect(saved.threats).toBeDefined()
@@ -171,15 +186,15 @@ describe('App — STRIDE analysis', () => {
     })
     mockElectronAPI.loadGraph.mockResolvedValue({ cancelled: false, content: fileWithThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /open/i }))
+    clickMenu('File', /^open$/i)
     await waitFor(() => expect(mockElectronAPI.loadGraph).toHaveBeenCalled())
-    await waitFor(() => expect(screen.getByText(/1 threats/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByDisplayValue('SQL Injection')).toBeInTheDocument())
   })
 
   it('shows threats inline after analysis completes', async () => {
     vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => expect(screen.getByDisplayValue('SQL Injection')).toBeInTheDocument())
   })
 
@@ -195,7 +210,7 @@ describe('App — STRIDE analysis', () => {
     ]
     vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { twoThreats.forEach(onThreat); return twoThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
     fireEvent.click(screen.getByDisplayValue('SQL Injection'))
     await waitFor(() =>
@@ -211,7 +226,7 @@ describe('App — STRIDE analysis', () => {
     ]
     vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { twoThreats.forEach(onThreat); return twoThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
     act(() => { canvasMock.onElementSelected?.('c1') })
     await waitFor(() =>
@@ -223,7 +238,7 @@ describe('App — STRIDE analysis', () => {
   it('clears the selection when canvas background is tapped', async () => {
     vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => { sampleThreats.forEach(onThreat); return sampleThreats })
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => screen.getByDisplayValue('SQL Injection'))
     act(() => { canvasMock.onElementSelected?.('c1') })
     act(() => { canvasMock.onElementSelected?.(null) })
@@ -242,19 +257,28 @@ describe('App — Export', () => {
     mockElectronAPI.loadSettings.mockResolvedValue(null)
   })
 
-  it('shows an Export PNG button', () => {
+  it('shows an Export PNG option in the Export menu', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /export png/i })).toBeInTheDocument()
+    openMenu('Export')
+    expect(screen.getByRole('menuitem', { name: /export png/i })).toBeInTheDocument()
   })
 
-  it('shows an Export SVG button', () => {
+  it('shows an Export SVG option in the Export menu', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /export svg/i })).toBeInTheDocument()
+    openMenu('Export')
+    expect(screen.getByRole('menuitem', { name: /export svg/i })).toBeInTheDocument()
   })
 
-  it('shows an Export JSON button', () => {
+  it('shows an Export JSON option in the Export menu', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /export json/i })).toBeInTheDocument()
+    openMenu('Export')
+    expect(screen.getByRole('menuitem', { name: /export json/i })).toBeInTheDocument()
+  })
+
+  it('shows an Export CSV option in the Export menu', () => {
+    render(<App />)
+    openMenu('Export')
+    expect(screen.getByRole('menuitem', { name: /export csv/i })).toBeInTheDocument()
   })
 })
 
@@ -281,14 +305,14 @@ describe('App — Error handling', () => {
   it('shows an error message when STRIDE analysis fails', async () => {
     vi.mocked(generateThreatsStreaming).mockRejectedValue(new Error('API error'))
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
   })
 
   it('dismisses the error message when it is clicked', async () => {
     vi.mocked(generateThreatsStreaming).mockRejectedValue(new Error('API error'))
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => screen.getByRole('alert'))
     fireEvent.click(screen.getByRole('alert'))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -312,7 +336,7 @@ describe('App — Analyze loading state', () => {
       new Promise(res => { resolveAnalyze = () => res([]) })
     )
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => expect(screen.getByRole('button', { name: /analyz/i })).toBeDisabled())
     resolveAnalyze()
     await waitFor(() => expect(screen.getByRole('button', { name: /analyze/i })).not.toBeDisabled())
@@ -332,23 +356,23 @@ describe('App — Side panel', () => {
 
   it('shows PropertiesPanel when a canvas entity is selected', () => {
     render(<App />)
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
-    expect(screen.getByDisplayValue('Browser')).toBeInTheDocument()
+    act(() => { canvasMock.onElementSelected?.('c3') })
+    expect(screen.getByDisplayValue('API Server')).toBeInTheDocument()
   })
 
   it('hides PropertiesPanel when the canvas background is tapped', () => {
     render(<App />)
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
+    act(() => { canvasMock.onElementSelected?.('c3') })
     act(() => { canvasMock.onElementSelected?.(null) })
-    expect(screen.queryByDisplayValue('Browser')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('API Server')).not.toBeInTheDocument()
   })
 
   it('closes PropertiesPanel when its close button is clicked', () => {
     render(<App />)
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
-    expect(screen.getByDisplayValue('Browser')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /close/i }))
-    expect(screen.queryByDisplayValue('Browser')).not.toBeInTheDocument()
+    act(() => { canvasMock.onElementSelected?.('c3') })
+    expect(screen.getByDisplayValue('API Server')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByDisplayValue('API Server')).not.toBeInTheDocument()
   })
 
   it('shows ChatPanel inline (not as a fixed overlay) when Generate Diagram is clicked', () => {
@@ -362,14 +386,14 @@ describe('App — Side panel', () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /generate diagram/i }))
     expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument()
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
+    act(() => { canvasMock.onElementSelected?.('c1') })
     expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument()
     expect(screen.getByDisplayValue('Browser')).toBeInTheDocument()
   })
 
   it('closes PropertiesPanel and opens ChatPanel when Generate Diagram is clicked while entity is selected', () => {
     render(<App />)
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
+    act(() => { canvasMock.onElementSelected?.('c1') })
     expect(screen.getByDisplayValue('Browser')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /generate diagram/i }))
     expect(screen.queryByDisplayValue('Browser')).not.toBeInTheDocument()
@@ -404,7 +428,7 @@ describe('App — Palette', () => {
   it('creates a component in the clicked zone and opens PropertiesPanel', () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /add component/i }))
-    act(() => { canvasMock.onElementSelected?.('z-internal') })
+    act(() => { canvasMock.onElementSelected?.('z3') })
     expect(screen.getByDisplayValue('New Component')).toBeInTheDocument()
   })
 
@@ -424,7 +448,7 @@ describe('App — Palette', () => {
   it('advances to target selection after a source component is clicked on the canvas', () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /add flow/i }))
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
+    act(() => { canvasMock.onElementSelected?.('c1') })
     expect(screen.getByText(/click a target component/i)).toBeInTheDocument()
     expect(screen.getByText(/browser/i)).toBeInTheDocument()
   })
@@ -432,8 +456,8 @@ describe('App — Palette', () => {
   it('creates a flow and opens PropertiesPanel when source and target are both selected', () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /add flow/i }))
-    act(() => { canvasMock.onElementSelected?.('c-browser') })
-    act(() => { canvasMock.onElementSelected?.('c-lb') })
+    act(() => { canvasMock.onElementSelected?.('c1') })
+    act(() => { canvasMock.onElementSelected?.('c2') })
     expect(screen.getByDisplayValue('New Flow')).toBeInTheDocument()
   })
 
@@ -454,22 +478,36 @@ describe('App — Context menu', () => {
 
   it('shows a context menu when a zone is right-clicked on the canvas', () => {
     render(<App />)
-    act(() => { canvasMock.onElementRightClicked?.('z-internal', { x: 100, y: 200 }) })
+    act(() => { canvasMock.onElementRightClicked?.('z3', { x: 100, y: 200 }) })
     expect(screen.getByText(/add component in internal network/i)).toBeInTheDocument()
   })
 
   it('creates a component in the zone and opens PropertiesPanel when the context menu item is clicked', () => {
     render(<App />)
-    act(() => { canvasMock.onElementRightClicked?.('z-internal', { x: 100, y: 200 }) })
+    act(() => { canvasMock.onElementRightClicked?.('z3', { x: 100, y: 200 }) })
     fireEvent.click(screen.getByText(/add component in internal network/i))
     expect(screen.getByDisplayValue('New Component')).toBeInTheDocument()
   })
 
   it('dismisses the context menu after clicking an item', () => {
     render(<App />)
-    act(() => { canvasMock.onElementRightClicked?.('z-internal', { x: 100, y: 200 }) })
+    act(() => { canvasMock.onElementRightClicked?.('z3', { x: 100, y: 200 }) })
     fireEvent.click(screen.getByText(/add component in internal network/i))
     expect(screen.queryByText(/add component in internal network/i)).not.toBeInTheDocument()
+  })
+
+  it('shows Add Boundary in the background context menu', () => {
+    render(<App />)
+    act(() => { canvasMock.onElementRightClicked?.(null, { x: 50, y: 60 }) })
+    expect(screen.getByText(/add boundary/i)).toBeInTheDocument()
+  })
+
+  it('creates a line-shape zone with start and end positions when Add Boundary is clicked', () => {
+    render(<App />)
+    act(() => { canvasMock.onElementRightClicked?.(null, { x: 50, y: 60 }) })
+    fireEvent.click(screen.getByText(/add boundary/i))
+    const shapeSelect = screen.getByRole('combobox', { name: /shape/i })
+    expect(shapeSelect).toHaveValue('line')
   })
 })
 
@@ -521,7 +559,7 @@ describe('App — Loading indicator', () => {
     let resolveAnalyze!: () => void
     vi.mocked(generateThreatsStreaming).mockReturnValue(new Promise(res => { resolveAnalyze = () => res([]) }))
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /analyze/i }))
+    clickAnalyze()
     await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
     resolveAnalyze()
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
@@ -565,21 +603,22 @@ describe('App — Position persistence', () => {
     mockElectronAPI.loadSettings.mockResolvedValue(null)
   })
 
-  it('does not add a position change to the undo stack', () => {
+  it('adds a position change to the undo stack', () => {
     render(<App />)
-    act(() => { canvasMock.onPositionChanged?.('z-internet', { x: 50, y: 50 }) })
-    expect(screen.getByRole('button', { name: /undo/i })).toBeDisabled()
+    act(() => { canvasMock.onPositionChanged?.('z1', { x: 50, y: 50 }) })
+    openMenu('Edit')
+    expect(screen.getByRole('menuitem', { name: /undo/i })).not.toBeDisabled()
   })
 
   it('saves updated zone position when Save is clicked after a position change', async () => {
     render(<App />)
-    act(() => { canvasMock.onPositionChanged?.('z-internet', { x: 50, y: 100 }) })
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    act(() => { canvasMock.onPositionChanged?.('z1', { x: 50, y: 100 }) })
+    clickMenu('File', /^save$/i)
     await waitFor(() => expect(mockElectronAPI.saveGraph).toHaveBeenCalled())
     const saved = JSON.parse(mockElectronAPI.saveGraph.mock.calls[0][0] as string) as {
       graph: { zones: Array<{ id: string; position?: { x: number; y: number } }> }
     }
-    const zone = saved.graph.zones.find(z => z.id === 'z-internet')
+    const zone = saved.graph.zones.find(z => z.id === 'z1')
     expect(zone?.position).toEqual({ x: 50, y: 100 })
   })
 })
@@ -595,20 +634,23 @@ describe('App — Undo / Redo', () => {
     mockElectronAPI.loadSettings.mockResolvedValue(null)
   })
 
-  it('shows Undo and Redo buttons in the header', () => {
+  it('shows Undo and Redo items in the Edit menu', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /redo/i })).toBeInTheDocument()
+    openMenu('Edit')
+    expect(screen.getByRole('menuitem', { name: /undo/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /redo/i })).toBeInTheDocument()
   })
 
-  it('Undo button is disabled when there is no history', () => {
+  it('Undo is disabled when there is no history', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /undo/i })).toBeDisabled()
+    openMenu('Edit')
+    expect(screen.getByRole('menuitem', { name: /undo/i })).toBeDisabled()
   })
 
-  it('Redo button is disabled when there is no future history', () => {
+  it('Redo is disabled when there is no future history', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: /redo/i })).toBeDisabled()
+    openMenu('Edit')
+    expect(screen.getByRole('menuitem', { name: /redo/i })).toBeDisabled()
   })
 
   it('Undo becomes enabled after a diagram is generated', async () => {
@@ -617,7 +659,9 @@ describe('App — Undo / Redo', () => {
     fireEvent.click(screen.getByRole('button', { name: /generate diagram/i }))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A web app' } })
     fireEvent.click(screen.getByRole('button', { name: /^generate$/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /undo/i })).not.toBeDisabled())
+    await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument())
+    openMenu('Edit')
+    expect(screen.getByRole('menuitem', { name: /undo/i })).not.toBeDisabled()
   })
 
   it('Redo becomes enabled after Undo is clicked', async () => {
@@ -626,8 +670,37 @@ describe('App — Undo / Redo', () => {
     fireEvent.click(screen.getByRole('button', { name: /generate diagram/i }))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A web app' } })
     fireEvent.click(screen.getByRole('button', { name: /^generate$/i }))
-    await waitFor(() => screen.getByRole('button', { name: /undo/i }))
-    fireEvent.click(screen.getByRole('button', { name: /undo/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /redo/i })).not.toBeDisabled())
+    await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument())
+    clickMenu('Edit', /undo/i)
+    openMenu('Edit')
+    expect(screen.getByRole('menuitem', { name: /redo/i })).not.toBeDisabled()
+  })
+})
+
+describe('App — ATT&CK', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'electronAPI', {
+      value: mockElectronAPI, writable: true, configurable: true,
+    })
+    vi.clearAllMocks()
+    mockElectronAPI.loadSettings.mockResolvedValue(null)
+  })
+
+  it('exposes ATT&CK as an item in the Analyze dropdown', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /^analyze$/i }))
+    expect(screen.getByRole('menuitem', { name: /ATT&CK/i })).toBeInTheDocument()
+  })
+
+  it('disables the ATT&CK menu item when no STRIDE threats exist yet', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /^analyze$/i }))
+    expect(screen.getByRole('menuitem', { name: /ATT&CK/i })).toBeDisabled()
+  })
+
+  it('renders the Threats and ATT&CK tabs in the bottom panel', () => {
+    render(<App />)
+    expect(screen.getByRole('button', { name: /^Threats$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^ATT&CK$/i })).toBeInTheDocument()
   })
 })

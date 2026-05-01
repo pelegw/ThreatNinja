@@ -12,7 +12,11 @@ export const LLMSettingsSchema = z.object({
   provider: z.nativeEnum(LLMProvider),
   apiKey: z.string().optional(),
   endpoint: z.string().optional(),
-  model: z.string().optional()
+  model: z.string().optional(),
+  nlToGraphPrompt: z.string().optional(),
+  interviewPrompt: z.string().optional(),
+  stridePrompt: z.string().optional(),
+  mitrePrompt: z.string().optional()
 })
 
 export type LLMSettings = z.infer<typeof LLMSettingsSchema>
@@ -55,6 +59,18 @@ const getElectronLLMComplete = (): ((params: { url: string; headers: Record<stri
   return undefined
 }
 
+type ElectronStreamFn = (
+  params: { url: string; headers: Record<string, string>; body: string },
+  onChunk: (chunk: string) => void
+) => Promise<{ ok: boolean; status: number }>
+
+const getElectronLLMStream = (): ElectronStreamFn | undefined => {
+  if (typeof window !== 'undefined' && 'electronAPI' in window && typeof window.electronAPI?.llmStream === 'function') {
+    return window.electronAPI.llmStream.bind(window.electronAPI)
+  }
+  return undefined
+}
+
 const httpPost = async (url: string, headers: Record<string, string>, body: string): Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> => {
   const electronComplete = getElectronLLMComplete()
   if (electronComplete !== undefined) {
@@ -76,6 +92,30 @@ const extractOpenAIText = (data: unknown): string | null => {
   return typeof content === 'string' ? content : null
 }
 
+const processSSEChunk = (
+  rawChunk: string,
+  state: { buffer: string; accumulated: string },
+  extractText: (data: unknown) => string | null,
+  onChunk: (text: string) => void
+): void => {
+  state.buffer += rawChunk
+  let newlinePos: number
+  while ((newlinePos = state.buffer.indexOf('\n')) !== -1) {
+    const line = state.buffer.slice(0, newlinePos)
+    state.buffer = state.buffer.slice(newlinePos + 1)
+    if (!line.startsWith('data: ')) continue
+    const payload = line.slice(6).trim()
+    if (payload === '[DONE]') continue
+    try {
+      const text = extractText(JSON.parse(payload) as unknown)
+      if (text !== null) {
+        state.accumulated += text
+        onChunk(text)
+      }
+    } catch { /* skip malformed */ }
+  }
+}
+
 const readSSEStream = async (
   url: string,
   headers: Record<string, string>,
@@ -83,38 +123,33 @@ const readSSEStream = async (
   extractText: (data: unknown) => string | null,
   onChunk: (text: string) => void
 ): Promise<string> => {
+  const electronStream = getElectronLLMStream()
+
+  if (electronStream !== undefined) {
+    const state = { buffer: '', accumulated: '' }
+    const result = await electronStream(
+      { url, headers, body },
+      (rawChunk) => processSSEChunk(rawChunk, state, extractText, onChunk)
+    )
+    if (!result.ok) throw new Error(`LLM API error: ${result.status}`)
+    return state.accumulated
+  }
+
   const response = await fetch(url, { method: 'POST', headers, body })
   if (!response.ok) throw new Error(`LLM API error: ${response.status}`)
   if (response.body === null) return ''
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
-  let accumulated = ''
-  let buffer = ''
+  const state = { buffer: '', accumulated: '' }
 
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
-    buffer += decoder.decode(value, { stream: true })
-
-    let newlinePos: number
-    while ((newlinePos = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, newlinePos)
-      buffer = buffer.slice(newlinePos + 1)
-      if (!line.startsWith('data: ')) continue
-      const payload = line.slice(6).trim()
-      if (payload === '[DONE]') continue
-      try {
-        const text = extractText(JSON.parse(payload) as unknown)
-        if (text !== null) {
-          accumulated += text
-          onChunk(text)
-        }
-      } catch { /* skip malformed */ }
-    }
+    processSSEChunk(decoder.decode(value, { stream: true }), state, extractText, onChunk)
   }
 
-  return accumulated
+  return state.accumulated
 }
 
 const anthropicClient = (apiKey: string, model?: string): LLMClient => ({

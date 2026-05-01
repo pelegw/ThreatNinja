@@ -11,7 +11,8 @@ export const StrideCategory = {
 
 export type StrideCategory = (typeof StrideCategory)[keyof typeof StrideCategory]
 
-const SeveritySchema = z.enum(['low', 'medium', 'high'])
+export const SeveritySchema = z.enum(['low', 'medium', 'high', 'critical'])
+export type Severity = z.infer<typeof SeveritySchema>
 
 export const ThreatSchema = z.object({
   id: z.string(),

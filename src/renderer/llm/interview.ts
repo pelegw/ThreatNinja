@@ -1,7 +1,7 @@
 import type { Graph } from '../model/graph'
 import type { LLMClient, LLMMessage } from './llm'
 
-const INTERVIEW_SYSTEM_PROMPT = `You are a senior security researcher conducting a pre-threat-modeling interview with software developers. Your goal is to gather context that will improve a STRIDE threat analysis.
+export const DEFAULT_INTERVIEW_PROMPT = `You are a senior security researcher conducting a pre-threat-modeling interview with software developers. Your goal is to gather context that will improve a STRIDE threat analysis.
 
 Ask one focused question at a time about topics such as:
 - Authentication and authorization mechanisms
@@ -31,36 +31,50 @@ const serializeGraphForInterview = (graph: Graph): string => {
 export const buildInterviewStartPrompt = (graph: Graph): string =>
   `${serializeGraphForInterview(graph)}\n\nI'd like you to interview me about this system to help with threat modeling. Please ask me one focused security-related question to start.`
 
-export const startInterview = async (client: LLMClient, graph: Graph): Promise<LLMMessage[]> => {
+const completeOrStream = async (
+  client: LLMClient,
+  messages: LLMMessage[],
+  system: string,
+  onChunk: (chunk: string) => void
+): Promise<string> => {
+  if (client.stream !== undefined) {
+    return client.stream(messages, system, onChunk)
+  }
+  const text = await client.complete(messages, system)
+  onChunk(text)
+  return text
+}
+
+const resolvePrompt = (override?: string): string =>
+  override !== undefined && override.length > 0 ? override : DEFAULT_INTERVIEW_PROMPT
+
+export const startInterview = async (client: LLMClient, graph: Graph, systemPrompt?: string): Promise<LLMMessage[]> => {
   const bootstrap: LLMMessage = { role: 'user', content: buildInterviewStartPrompt(graph) }
   const messages: LLMMessage[] = [bootstrap]
-  const firstQuestion = await client.complete(messages, INTERVIEW_SYSTEM_PROMPT)
+  const firstQuestion = await client.complete(messages, resolvePrompt(systemPrompt))
   return [...messages, { role: 'assistant', content: firstQuestion }]
 }
 
 export const continueInterview = async (
   client: LLMClient,
   history: LLMMessage[],
-  userAnswer: string
+  userAnswer: string,
+  systemPrompt?: string
 ): Promise<LLMMessage[]> => {
   const updated: LLMMessage[] = [...history, { role: 'user', content: userAnswer }]
-  const nextQuestion = await client.complete(updated, INTERVIEW_SYSTEM_PROMPT)
+  const nextQuestion = await client.complete(updated, resolvePrompt(systemPrompt))
   return [...updated, { role: 'assistant', content: nextQuestion }]
 }
 
 export const startInterviewStreaming = async (
   client: LLMClient,
   graph: Graph,
-  onChunk: (chunk: string) => void
+  onChunk: (chunk: string) => void,
+  systemPrompt?: string
 ): Promise<LLMMessage[]> => {
   const bootstrap: LLMMessage = { role: 'user', content: buildInterviewStartPrompt(graph) }
   const messages: LLMMessage[] = [bootstrap]
-  if (client.stream !== undefined) {
-    const text = await client.stream(messages, INTERVIEW_SYSTEM_PROMPT, onChunk)
-    return [...messages, { role: 'assistant', content: text }]
-  }
-  const text = await client.complete(messages, INTERVIEW_SYSTEM_PROMPT)
-  onChunk(text)
+  const text = await completeOrStream(client, messages, resolvePrompt(systemPrompt), onChunk)
   return [...messages, { role: 'assistant', content: text }]
 }
 
@@ -68,15 +82,11 @@ export const continueInterviewStreaming = async (
   client: LLMClient,
   history: LLMMessage[],
   userAnswer: string,
-  onChunk: (chunk: string) => void
+  onChunk: (chunk: string) => void,
+  systemPrompt?: string
 ): Promise<LLMMessage[]> => {
   const updated: LLMMessage[] = [...history, { role: 'user', content: userAnswer }]
-  if (client.stream !== undefined) {
-    const text = await client.stream(updated, INTERVIEW_SYSTEM_PROMPT, onChunk)
-    return [...updated, { role: 'assistant', content: text }]
-  }
-  const text = await client.complete(updated, INTERVIEW_SYSTEM_PROMPT)
-  onChunk(text)
+  const text = await completeOrStream(client, updated, resolvePrompt(systemPrompt), onChunk)
   return [...updated, { role: 'assistant', content: text }]
 }
 

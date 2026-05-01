@@ -29,6 +29,8 @@
     "vitest": "^2.1.2"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "cytoscape": "^3.33.2",
     "cytoscape-cose-bilkent": "^4.1.0",
     "cytoscape-dagre": "^2.5.0",

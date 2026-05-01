@@ -1,10 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render as baseRender, screen, fireEvent } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import ThreatsPanel from './ThreatsPanel'
 import { StrideCategory } from '../model/threats'
 import type { Threat } from '../model/threats'
+import { ThemeContext, lightTheme } from './tokens'
+
+const themeWrapper = ({ children }: { children: React.ReactNode }) =>
+  <ThemeContext.Provider value={lightTheme}>{children}</ThemeContext.Provider>
+
+const render: typeof baseRender = (ui, options) =>
+  baseRender(ui, { wrapper: themeWrapper, ...options })
 
 const sampleThreats: Threat[] = [
   { id: 't1', title: 'SQL Injection', category: StrideCategory.Tampering, description: 'Attacker injects SQL', affectedId: 'c-db', severity: 'high' },
@@ -28,8 +35,21 @@ describe('ThreatsPanel', () => {
 
   it('renders the severity for each threat as a select', () => {
     render(<ThreatsPanel threats={sampleThreats} onClose={noop} />)
-    expect(screen.getByDisplayValue('high')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('medium')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('High')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Medium')).toBeInTheDocument()
+  })
+
+  it('offers Critical as the highest severity option in each row dropdown', () => {
+    render(<ThreatsPanel threats={sampleThreats} onClose={noop} />)
+    const sevSelects = screen.getAllByRole('combobox').filter(s => (s as HTMLSelectElement).value === 'high' || (s as HTMLSelectElement).value === 'medium')
+    expect(sevSelects.length).toBeGreaterThan(0)
+    sevSelects.forEach(s => expect(s.querySelector('option[value="critical"]')).toBeInTheDocument())
+  })
+
+  it('shows a Critical count chip in the header when at least one critical threat exists', () => {
+    const withCritical = [{ ...sampleThreats[0]!, severity: 'critical' as const }, sampleThreats[1]!]
+    render(<ThreatsPanel threats={withCritical} onClose={noop} />)
+    expect(screen.getAllByText(/1 Critical/i).length).toBeGreaterThan(0)
   })
 
   it('renders the threat description', () => {
@@ -61,7 +81,29 @@ describe('ThreatsPanel', () => {
 
   it('shows the count of threats in the heading', () => {
     render(<ThreatsPanel threats={sampleThreats} onClose={noop} />)
-    expect(screen.getByText(/2 threats/i)).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
+  })
+})
+
+describe('ThreatsPanel — analyzing state', () => {
+  it('shows an analyzing message when isAnalyzing is true and threats are empty', () => {
+    render(<ThreatsPanel threats={[]} isAnalyzing={true} />)
+    expect(screen.getByText('Analyzing threats...')).toBeInTheDocument()
+  })
+
+  it('shows a progress bar when isAnalyzing is true', () => {
+    render(<ThreatsPanel threats={[]} isAnalyzing={true} />)
+    expect(screen.getByRole('progressbar')).toBeInTheDocument()
+  })
+
+  it('shows the streaming count when threats arrive during analysis', () => {
+    render(<ThreatsPanel threats={sampleThreats} isAnalyzing={true} />)
+    expect(screen.getByText('2')).toBeInTheDocument()
+  })
+
+  it('does not show "No threats found" while analyzing', () => {
+    render(<ThreatsPanel threats={[]} isAnalyzing={true} />)
+    expect(screen.queryByText(/no threats found/i)).not.toBeInTheDocument()
   })
 })
 
@@ -104,16 +146,74 @@ describe('ThreatsPanel — editing', () => {
 
   it('shows an Add Threat button', () => {
     render(<ThreatsPanel threats={sampleThreats} onClose={noop} />)
-    expect(screen.getByRole('button', { name: /add threat/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /new threat/i })).toBeInTheDocument()
+  })
+
+  it('shows the Add Threat button before any analysis (when threats is null)', () => {
+    render(<ThreatsPanel threats={null} onClose={noop} />)
+    expect(screen.getByRole('button', { name: /new threat/i })).toBeInTheDocument()
+  })
+
+  it('calls onThreatsChange with a single new threat when Add Threat is clicked from null', () => {
+    const onThreatsChange = vi.fn()
+    render(<ThreatsPanel threats={null} onClose={noop} onThreatsChange={onThreatsChange} />)
+    fireEvent.click(screen.getByRole('button', { name: /new threat/i }))
+    const [updated] = onThreatsChange.mock.calls[onThreatsChange.mock.calls.length - 1] as [typeof sampleThreats]
+    expect(updated).toHaveLength(1)
+    expect(updated[0]!.title).toBe('')
   })
 
   it('calls onThreatsChange with a new empty threat appended when Add Threat is clicked', () => {
     const onThreatsChange = vi.fn()
     render(<ThreatsPanel threats={sampleThreats} onClose={noop} onThreatsChange={onThreatsChange} />)
-    fireEvent.click(screen.getByRole('button', { name: /add threat/i }))
+    fireEvent.click(screen.getByRole('button', { name: /new threat/i }))
     const [updated] = onThreatsChange.mock.calls[onThreatsChange.mock.calls.length - 1] as [typeof sampleThreats]
     expect(updated).toHaveLength(sampleThreats.length + 1)
     expect(updated[updated.length - 1]!.title).toBe('')
+  })
+})
+
+describe('ThreatsPanel — affected picker', () => {
+  const sampleGraph = {
+    id: 'g1', name: 'X',
+    zones: [{ id: 'z1', name: 'DMZ' }],
+    components: [
+      { id: 'c-api', name: 'API', type: 'process' as const, zoneId: 'z1' },
+      { id: 'c-db', name: 'Database', type: 'datastore' as const, zoneId: 'z1' }
+    ],
+    flows: [
+      { id: 'f1', name: 'API → DB', originatorId: 'c-api', targetId: 'c-db', direction: 'unidirectional' as const }
+    ]
+  }
+
+  it('renders the Affected cell as a select when graph is provided', () => {
+    render(<ThreatsPanel threats={sampleThreats} onClose={noop} graph={sampleGraph} />)
+    const selects = screen.getAllByRole('combobox', { name: /affected/i })
+    expect(selects.length).toBe(sampleThreats.length)
+  })
+
+  it('lists components and flows as options in the Affected select', () => {
+    render(<ThreatsPanel threats={sampleThreats} onClose={noop} graph={sampleGraph} />)
+    const select = screen.getAllByRole('combobox', { name: /affected/i })[0]!
+    expect(select.querySelector('option[value="c-api"]')).toBeInTheDocument()
+    expect(select.querySelector('option[value="c-db"]')).toBeInTheDocument()
+    expect(select.querySelector('option[value="f1"]')).toBeInTheDocument()
+  })
+
+  it('includes an "(unassigned)" option for empty affectedId', () => {
+    render(<ThreatsPanel threats={sampleThreats} onClose={noop} graph={sampleGraph} />)
+    const select = screen.getAllByRole('combobox', { name: /affected/i })[0]!
+    expect(select.querySelector('option[value=""]')).toBeInTheDocument()
+  })
+
+  it('calls onThreatsChange when the Affected select changes', () => {
+    const onThreatsChange = vi.fn()
+    render(<ThreatsPanel threats={sampleThreats} onClose={noop} graph={sampleGraph} onThreatsChange={onThreatsChange} />)
+    const select = screen.getAllByRole('combobox', { name: /affected/i })[0]!
+    fireEvent.change(select, { target: { value: 'f1' } })
+    expect(onThreatsChange).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: 't1', affectedId: 'f1' })])
+    )
   })
 })
 

@@ -7,19 +7,19 @@ export const ZoneSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   parentId: z.string().optional(),
-  position: PositionSchema.optional()
+  position: PositionSchema.optional(),
+  shape: z.enum(['rect', 'line']).optional(),
+  endPosition: PositionSchema.optional(),
+  midPosition: PositionSchema.optional()
 })
 
 export type Zone = z.infer<typeof ZoneSchema>
 
 export const ComponentType = {
-  Server: 'server',
-  Desktop: 'desktop',
-  Database: 'database',
-  Service: 'service',
-  FileStore: 'fileStore',
-  ObjectStorage: 'objectStorage',
-  ExternalEntity: 'externalEntity'
+  Process: 'process',
+  External: 'external',
+  DataStore: 'datastore',
+  Queue: 'queue',
 } as const
 
 export type ComponentType = (typeof ComponentType)[keyof typeof ComponentType]
@@ -29,6 +29,7 @@ export const ComponentSchema = z.object({
   name: z.string(),
   type: z.nativeEnum(ComponentType),
   zoneId: z.string(),
+  icon: z.string().optional(),
   position: PositionSchema.optional()
 })
 

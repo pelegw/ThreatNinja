@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { useTheme } from './tokens'
 
 type Item = { label: string; onClick: () => void }
 
@@ -9,18 +10,33 @@ type Props = {
 }
 
 export default function ContextMenu({ items, position, onDismiss }: Props): JSX.Element {
+  const t = useTheme()
+  const menuRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
-    const handler = () => onDismiss()
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node) === true) return
+      onDismiss()
+    }
     document.body.addEventListener('mousedown', handler)
     return () => document.body.removeEventListener('mousedown', handler)
   }, [onDismiss])
 
   return (
-    <div style={{ ...menuStyle, left: position.x, top: position.y }}>
+    <div ref={menuRef} style={{
+      position: 'fixed', background: t.bgAlt, border: `1px solid ${t.border}`,
+      borderRadius: 6, padding: '4px 0', zIndex: 300, minWidth: 160,
+      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+      left: position.x, top: position.y,
+    }}>
       {items.map(item => (
         <button
           key={item.label}
-          style={itemStyle}
+          style={{
+            display: 'block', width: '100%', padding: '7px 14px', background: 'none',
+            border: 'none', color: t.text, fontSize: 13, textAlign: 'left',
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}
           onClick={() => { item.onClick(); onDismiss() }}
         >
           {item.label}
@@ -28,16 +44,4 @@ export default function ContextMenu({ items, position, onDismiss }: Props): JSX.
       ))}
     </div>
   )
-}
-
-const menuStyle: React.CSSProperties = {
-  position: 'fixed', background: '#1a1a2e', border: '1px solid #4a4a7e',
-  borderRadius: '4px', padding: '4px 0', zIndex: 300, minWidth: '160px',
-  boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
-}
-
-const itemStyle: React.CSSProperties = {
-  display: 'block', width: '100%', padding: '7px 14px', background: 'none',
-  border: 'none', color: '#e0e0ff', fontSize: '13px', textAlign: 'left',
-  cursor: 'pointer'
 }

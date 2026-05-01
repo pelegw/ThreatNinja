@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { render as baseRender, screen, act } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import Canvas from './Canvas'
 import { ComponentType, FlowDirection, GraphSchema } from '../model/graph'
+import { ThemeContext, lightTheme } from '../ui/tokens'
 
 const { mockCytoscape, mockCyInstance } = vi.hoisted(() => {
   const mockCyInstance = {
@@ -17,8 +18,20 @@ const { mockCytoscape, mockCyInstance } = vi.hoisted(() => {
     fit: vi.fn(),
     panBy: vi.fn(),
     elements: vi.fn(() => ({ remove: vi.fn() })),
-    style: vi.fn(() => ({ selector: vi.fn(() => ({ style: vi.fn() })) })),
-    getElementById: vi.fn(() => ({ data: vi.fn(), remove: vi.fn(), classes: vi.fn() }))
+    style: vi.fn(() => ({ selector: vi.fn(() => ({ style: vi.fn() })), fromJson: vi.fn(() => ({ update: vi.fn() })) })),
+    getElementById: vi.fn(() => ({
+      data: vi.fn(),
+      remove: vi.fn(),
+      classes: vi.fn(),
+      position: vi.fn(),
+      isEdge: vi.fn(() => false),
+      addClass: vi.fn(),
+      removeClass: vi.fn(),
+      source: vi.fn(() => ({ id: () => '' })),
+      target: vi.fn(() => ({ id: () => '' })),
+      move: vi.fn()
+    })),
+    nodes: vi.fn(() => ({ forEach: vi.fn() }))
   }
   const mockCytoscape = Object.assign(vi.fn(() => mockCyInstance), { use: vi.fn() })
   return { mockCytoscape, mockCyInstance }
@@ -29,12 +42,18 @@ vi.mock('cytoscape', () => ({ default: mockCytoscape }))
 vi.mock('cytoscape-dagre', () => ({ default: vi.fn() }))
 vi.mock('cytoscape-cose-bilkent', () => ({ default: vi.fn() }))
 
+const themeWrapper = ({ children }: { children: React.ReactNode }) =>
+  <ThemeContext.Provider value={lightTheme}>{children}</ThemeContext.Provider>
+
+const render: typeof baseRender = (ui, options) =>
+  baseRender(ui, { wrapper: themeWrapper, ...options })
+
 const makeGraph = () =>
   GraphSchema.parse({
     id: 'g1',
     name: 'Test',
     zones: [{ id: 'z1', name: 'DMZ' }],
-    components: [{ id: 'c1', name: 'Web Server', type: ComponentType.Server, zoneId: 'z1' }],
+    components: [{ id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1' }],
     flows: [{ id: 'f1', name: 'HTTPS', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }]
   })
 
@@ -68,25 +87,47 @@ describe('Canvas', () => {
 
   it('registers a cxttap listener when onElementRightClicked is provided', () => {
     render(<Canvas graph={makeGraph()} onElementRightClicked={vi.fn()} />)
-    expect(mockCyInstance.on).toHaveBeenCalledWith('cxttap', 'node', expect.any(Function))
+    expect(mockCyInstance.on).toHaveBeenCalledWith('cxttap', expect.any(Function))
   })
 
   it('does not register a cxttap listener when onElementRightClicked is not provided', () => {
     render(<Canvas graph={makeGraph()} />)
-    expect(mockCyInstance.on).not.toHaveBeenCalledWith('cxttap', 'node', expect.any(Function))
+    expect(mockCyInstance.on).not.toHaveBeenCalledWith('cxttap', expect.any(Function))
   })
 
-  it('calls onElementRightClicked with element id and client position on cxttap', () => {
+  it('calls onElementRightClicked with element id and client position on cxttap of an element', () => {
     const onRightClicked = vi.fn()
     render(<Canvas graph={makeGraph()} onElementRightClicked={onRightClicked} />)
     const cxttapHandler = mockCyInstance.on.mock.calls.find(
-      ([event, selector]: [string, unknown]) => event === 'cxttap' && selector === 'node'
-    )?.[2] as ((evt: unknown) => void) | undefined
+      ([event, second]: [string, unknown]) => event === 'cxttap' && typeof second === 'function'
+    )?.[1] as ((evt: unknown) => void) | undefined
     cxttapHandler?.({
       target: { id: () => 'z1' },
       originalEvent: { clientX: 100, clientY: 200 }
     })
     expect(onRightClicked).toHaveBeenCalledWith('z1', { x: 100, y: 200 })
+  })
+
+  it('calls onElementRightClicked with null id when right-clicking the canvas background', () => {
+    const onRightClicked = vi.fn()
+    render(<Canvas graph={makeGraph()} onElementRightClicked={onRightClicked} />)
+    const cxttapHandler = mockCyInstance.on.mock.calls.find(
+      ([event, second]: [string, unknown]) => event === 'cxttap' && typeof second === 'function'
+    )?.[1] as ((evt: unknown) => void) | undefined
+    cxttapHandler?.({
+      target: mockCyInstance,
+      originalEvent: { clientX: 50, clientY: 75 }
+    })
+    expect(onRightClicked).toHaveBeenCalledWith(null, { x: 50, y: 75 })
+  })
+
+  it('binds a mousedown handler on edges to support drag-to-reconnect', () => {
+    render(<Canvas graph={makeGraph()} onFlowEndpointChanged={vi.fn()} />)
+    expect(mockCyInstance.on).toHaveBeenCalledWith('mousedown', 'edge', expect.any(Function))
+  })
+
+  it('accepts an onFlowEndpointChanged prop without throwing', () => {
+    expect(() => render(<Canvas graph={makeGraph()} onFlowEndpointChanged={vi.fn()} />)).not.toThrow()
   })
 
   it('exposes a getCy method via ref that returns the Cytoscape instance', () => {
@@ -125,7 +166,7 @@ describe('Canvas — incremental updates', () => {
       ...graph1,
       flows: [{ id: 'f1', name: 'HTTPS', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional, encrypted: true }]
     })
-    const mockElement = { data: vi.fn(), remove: vi.fn(), classes: vi.fn() }
+    const mockElement = { data: vi.fn(), remove: vi.fn(), classes: vi.fn(), isEdge: vi.fn(() => false) }
     mockCyInstance.getElementById.mockReturnValue(mockElement)
     const { rerender } = render(<Canvas graph={graph1} />)
     vi.clearAllMocks()
@@ -148,7 +189,7 @@ describe('Canvas — incremental updates', () => {
   it('calls cy.getElementById(id).remove() when an element is removed from the graph', () => {
     const graph1 = makeGraph()
     const graph2 = GraphSchema.parse({ id: 'g1', name: 'Test', zones: [], components: [], flows: [] })
-    const mockElement = { data: vi.fn(), remove: vi.fn(), classes: vi.fn() }
+    const mockElement = { data: vi.fn(), remove: vi.fn(), classes: vi.fn(), isEdge: vi.fn(() => false) }
     mockCyInstance.getElementById.mockReturnValue(mockElement)
     const { rerender } = render(<Canvas graph={graph1} />)
     rerender(<Canvas graph={graph2} />)
@@ -183,28 +224,53 @@ describe('Canvas — right-click panning', () => {
 
 describe('Canvas — position tracking', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     vi.clearAllMocks()
   })
 
-  it('registers a dragfree event listener when onPositionChanged is provided', () => {
-    render(<Canvas graph={makeGraph()} onPositionChanged={vi.fn()} />)
-    expect(mockCyInstance.on).toHaveBeenCalledWith('dragfree', 'node', expect.any(Function))
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
-  it('does not register a dragfree listener when onPositionChanged is not provided', () => {
-    render(<Canvas graph={makeGraph()} />)
-    expect(mockCyInstance.on).not.toHaveBeenCalledWith('dragfree', 'node', expect.any(Function))
-  })
-
-  it('calls onPositionChanged with element id and position on dragfree', () => {
-    const onPositionChanged = vi.fn()
-    render(<Canvas graph={makeGraph()} onPositionChanged={onPositionChanged} />)
-    const dragfreeHandler = mockCyInstance.on.mock.calls.find(
-      ([event, selector]: [string, unknown]) => event === 'dragfree' && selector === 'node'
+  const getHandler = (event: string) =>
+    mockCyInstance.on.mock.calls.find(
+      ([e, s]: [string, unknown]) => e === event && s === 'node'
     )?.[2] as ((evt: unknown) => void) | undefined
-    dragfreeHandler?.({
-      target: { id: () => 'z1', position: () => ({ x: 100, y: 200 }) }
-    })
-    expect(onPositionChanged).toHaveBeenCalledWith('z1', { x: 100, y: 200 })
+
+  it('registers a drag event listener when onPositionChanged is provided', () => {
+    render(<Canvas graph={makeGraph()} onPositionChanged={vi.fn()} />)
+    expect(mockCyInstance.on).toHaveBeenCalledWith('drag', 'node', expect.any(Function))
+  })
+
+  it('does not register a drag listener when onPositionChanged is not provided', () => {
+    render(<Canvas graph={makeGraph()} />)
+    expect(mockCyInstance.on).not.toHaveBeenCalledWith('drag', 'node', expect.any(Function))
+  })
+
+  it('calls onPositionChanged for all nodes after drag settles', () => {
+    const onPositionChanged = vi.fn()
+    const node1 = { id: () => 'c1', position: () => ({ x: 100, y: 200 }) }
+    const node2 = { id: () => 'z1', position: () => ({ x: 50, y: 60 }) }
+    mockCyInstance.nodes.mockReturnValue({ forEach: (fn: (n: unknown) => void) => { fn(node1); fn(node2) } })
+    render(<Canvas graph={makeGraph()} onPositionChanged={onPositionChanged} />)
+    const dragHandler = getHandler('drag')
+    dragHandler?.({ target: node1 })
+    expect(onPositionChanged).not.toHaveBeenCalled()
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(onPositionChanged).toHaveBeenCalledWith('c1', { x: 100, y: 200 })
+    expect(onPositionChanged).toHaveBeenCalledWith('z1', { x: 50, y: 60 })
+  })
+
+  it('debounces rapid drag events into a single position update', () => {
+    const onPositionChanged = vi.fn()
+    const node1 = { id: () => 'c1', position: () => ({ x: 100, y: 200 }) }
+    mockCyInstance.nodes.mockReturnValue({ forEach: (fn: (n: unknown) => void) => { fn(node1) } })
+    render(<Canvas graph={makeGraph()} onPositionChanged={onPositionChanged} />)
+    const dragHandler = getHandler('drag')
+    dragHandler?.({ target: node1 })
+    dragHandler?.({ target: node1 })
+    dragHandler?.({ target: node1 })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(onPositionChanged).toHaveBeenCalledTimes(1)
   })
 })

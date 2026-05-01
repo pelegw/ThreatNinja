@@ -22,8 +22,15 @@ describe('ThreatSchema', () => {
 
   it('rejects a threat with unknown severity', () => {
     expect(() => ThreatSchema.parse({
-      id: 't1', title: 'x', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'critical'
+      id: 't1', title: 'x', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'catastrophic'
     })).toThrow()
+  })
+
+  it('accepts severity "critical" as the highest tier', () => {
+    const parsed = ThreatSchema.parse({
+      id: 't1', title: 'x', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'critical'
+    })
+    expect(parsed.severity).toBe('critical')
   })
 
   it('rejects a threat missing required fields', () => {

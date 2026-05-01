@@ -30,6 +30,34 @@ describe('Zone', () => {
     expect(() => ZoneSchema.parse({ id: 'z1', name: 'DMZ', position: { x: 'bad', y: 200 } })).toThrow()
   })
 
+  it('accepts an optional shape field with rect or line', () => {
+    expect(ZoneSchema.parse({ id: 'z1', name: 'DMZ', shape: 'rect' }).shape).toBe('rect')
+    expect(ZoneSchema.parse({ id: 'z1', name: 'DMZ', shape: 'line' }).shape).toBe('line')
+  })
+
+  it('preserves zone without a shape (shape remains undefined for legacy diagrams)', () => {
+    expect(ZoneSchema.parse({ id: 'z1', name: 'DMZ' }).shape).toBeUndefined()
+  })
+
+  it('throws when shape is an unknown value', () => {
+    expect(() => ZoneSchema.parse({ id: 'z1', name: 'DMZ', shape: 'pentagon' })).toThrow()
+  })
+
+  it('accepts an optional endPosition with x and y coordinates (line endpoint)', () => {
+    const result = ZoneSchema.parse({ id: 'z1', name: 'DMZ', shape: 'line', position: { x: 0, y: 0 }, endPosition: { x: 200, y: 0 } })
+    expect(result.endPosition).toEqual({ x: 200, y: 0 })
+  })
+
+  it('accepts an optional midPosition for curved boundaries', () => {
+    const result = ZoneSchema.parse({ id: 'z1', name: 'DMZ', shape: 'line', position: { x: 0, y: 0 }, endPosition: { x: 200, y: 0 }, midPosition: { x: 100, y: 50 } })
+    expect(result.midPosition).toEqual({ x: 100, y: 50 })
+  })
+
+  it('preserves zone without midPosition (line stays straight by default)', () => {
+    const result = ZoneSchema.parse({ id: 'z1', name: 'DMZ', shape: 'line' })
+    expect(result.midPosition).toBeUndefined()
+  })
+
   it('throws when id is missing', () => {
     expect(() => ZoneSchema.parse({ name: 'DMZ' })).toThrow()
   })
@@ -52,14 +80,30 @@ describe('Component', () => {
     }
   })
 
+  it('exposes the four DFD node classes', () => {
+    expect(new Set(Object.values(ComponentType))).toEqual(
+      new Set(['process', 'external', 'datastore', 'queue'])
+    )
+  })
+
   it('accepts an optional position with x and y coordinates', () => {
-    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Server, zoneId: 'z1', position: { x: 50, y: 75 } })
+    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1', position: { x: 50, y: 75 } })
     expect(result.position).toEqual({ x: 50, y: 75 })
   })
 
   it('preserves component without position (position remains undefined)', () => {
-    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Server, zoneId: 'z1' })
+    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1' })
     expect(result.position).toBeUndefined()
+  })
+
+  it('accepts an optional icon string identifying the subclass', () => {
+    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1', icon: 'server' })
+    expect(result.icon).toBe('server')
+  })
+
+  it('preserves component without icon (icon remains undefined when type is unknown)', () => {
+    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1' })
+    expect(result.icon).toBeUndefined()
   })
 
   it('throws when type is an unknown value', () => {
@@ -70,7 +114,7 @@ describe('Component', () => {
 
   it('throws when zoneId is missing', () => {
     expect(() =>
-      ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Server })
+      ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process })
     ).toThrow()
   })
 
@@ -78,7 +122,7 @@ describe('Component', () => {
     const result = ComponentSchema.parse({
       id: 'c1',
       name: 'Web Server',
-      type: ComponentType.Server,
+      type: ComponentType.Process,
       zoneId: 'z1',
       extra: 'ignored'
     })
@@ -148,7 +192,7 @@ describe('Flow', () => {
 
 describe('Graph', () => {
   const zone = { id: 'z1', name: 'DMZ' }
-  const component = { id: 'c1', name: 'Web Server', type: ComponentType.Server, zoneId: 'z1' }
+  const component = { id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1' }
   const flow = { id: 'f1', name: 'HTTPS', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }
 
   it('parses a graph with zones, components, and flows', () => {
@@ -186,7 +230,7 @@ const makeGraph = () => GraphSchema.parse({
   id: 'g1',
   name: 'My System',
   zones: [{ id: 'z1', name: 'DMZ' }],
-  components: [{ id: 'c1', name: 'Web Server', type: ComponentType.Server, zoneId: 'z1' }],
+  components: [{ id: 'c1', name: 'Web Server', type: ComponentType.Process, zoneId: 'z1' }],
   flows: [{ id: 'f1', name: 'HTTPS', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }]
 })
 

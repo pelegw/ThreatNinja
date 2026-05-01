@@ -1,125 +1,148 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import Canvas from './canvas/Canvas'
 import type { CanvasHandle } from './canvas/Canvas'
 import { GraphSchema, ComponentType, FlowDirection } from './model/graph'
 import type { Graph, Flow } from './model/graph'
-import { buildFilePayload, extractGraph, extractThreats, extractInterviewTranscript } from './storage/file'
+import { buildFilePayload, parseFilePayload } from './storage/file'
 import SettingsPanel from './ui/SettingsPanel'
 import ChatPanel from './ui/ChatPanel'
 import ThreatsPanel from './ui/ThreatsPanel'
+import AttackPanel from './ui/AttackPanel'
+import { generateAttackThreatsStreaming } from './llm/attackAnalysis'
+import type { AttackThreat } from './model/attackThreats'
 import PropertiesPanel from './ui/PropertiesPanel'
 import PalettePanel from './ui/PalettePanel'
 import type { FlowDraft } from './ui/PalettePanel'
 import ContextMenu from './ui/ContextMenu'
-import { LLMProvider, LLMSettingsSchema, createLLMClient } from './llm/llm'
-import type { LLMSettings, LLMMessage } from './llm/llm'
+import ToolbarDropdown from './ui/ToolbarDropdown'
+import { createLLMClient } from './llm/llm'
 import { generateGraphFromDescription } from './llm/nlToGraph'
 import { generateThreatsStreaming } from './llm/strideAnalysis'
-import { startInterviewStreaming, continueInterviewStreaming } from './llm/interview'
 import InterviewPanel from './ui/InterviewPanel'
-import type { ThreatList } from './model/threats'
-import { exportToPng, exportToSvg, exportToJson } from './canvas/export'
+import { exportToPng, exportToSvg, exportToJson, exportThreatsToCsv } from './canvas/export'
+import { useAppHistory } from './hooks/useAppHistory'
+import { nextId } from './model/ids'
+import { useInterview } from './hooks/useInterview'
+import { useLLMSettings } from './hooks/useLLMSettings'
+import { ThemeContext, lightTheme, darkTheme, fonts } from './ui/tokens'
+import type { Theme } from './ui/tokens'
 
 const defaultGraph: Graph = GraphSchema.parse({
-  id: 'demo',
+  id: 'g1',
   name: 'Demo System',
   zones: [
-    { id: 'z-internet', name: 'Internet' },
-    { id: 'z-dmz', name: 'DMZ', description: 'Demilitarized zone' },
-    { id: 'z-internal', name: 'Internal Network' }
+    { id: 'z1', name: 'Internet' },
+    { id: 'z2', name: 'DMZ', description: 'Demilitarized zone' },
+    { id: 'z3', name: 'Internal Network' }
   ],
   components: [
-    { id: 'c-browser', name: 'Browser', type: ComponentType.Desktop, zoneId: 'z-internet' },
-    { id: 'c-lb', name: 'Load Balancer', type: ComponentType.Server, zoneId: 'z-dmz' },
-    { id: 'c-api', name: 'API Server', type: ComponentType.Service, zoneId: 'z-internal' },
-    { id: 'c-db', name: 'Database', type: ComponentType.Database, zoneId: 'z-internal' }
+    { id: 'c1', name: 'Browser', type: ComponentType.External, zoneId: 'z1', icon: 'browser' },
+    { id: 'c2', name: 'Load Balancer', type: ComponentType.Process, zoneId: 'z2', icon: 'server' },
+    { id: 'c3', name: 'API Server', type: ComponentType.Process, zoneId: 'z3', icon: 'server' },
+    { id: 'c4', name: 'Database', type: ComponentType.DataStore, zoneId: 'z3', icon: 'database' }
   ],
   flows: [
-    { id: 'f1', name: 'User Traffic', originatorId: 'c-browser', targetId: 'c-lb', direction: FlowDirection.Unidirectional, protocol: 'HTTPS', encrypted: true, encryption: 'TLS' },
-    { id: 'f2', name: 'Backend Traffic', originatorId: 'c-lb', targetId: 'c-api', direction: FlowDirection.Bidirectional, protocol: 'HTTP', encrypted: false },
-    { id: 'f3', name: 'Database Query', originatorId: 'c-api', targetId: 'c-db', direction: FlowDirection.Bidirectional, protocol: 'SQL', encrypted: true, encryption: 'TLS' }
+    { id: 'f1', name: 'User Traffic', originatorId: 'c1', targetId: 'c2', direction: FlowDirection.Unidirectional, protocol: 'HTTPS', encrypted: true, encryption: 'TLS' },
+    { id: 'f2', name: 'Backend Traffic', originatorId: 'c2', targetId: 'c3', direction: FlowDirection.Bidirectional, protocol: 'HTTP', encrypted: false },
+    { id: 'f3', name: 'Database Query', originatorId: 'c3', targetId: 'c4', direction: FlowDirection.Bidirectional, protocol: 'SQL', encrypted: true, encryption: 'TLS' }
   ]
 })
 
-const defaultSettings: LLMSettings = { provider: LLMProvider.Anthropic }
-
 export default function App(): JSX.Element {
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    try { return localStorage.getItem('tn-theme') === 'dark' } catch { return false }
+  })
+  const theme = isDark ? darkTheme : lightTheme
+
+  const toggleTheme = useCallback(() => {
+    setIsDark(prev => {
+      const next = !prev
+      try { localStorage.setItem('tn-theme', next ? 'dark' : 'light') } catch { /* noop */ }
+      return next
+    })
+  }, [])
+
   const canvasRef = useRef<CanvasHandle>(null)
-  const [graph, setGraph] = useState<Graph>(defaultGraph)
-  const [undoStack, setUndoStack] = useState<Graph[]>([])
-  const [redoStack, setRedoStack] = useState<Graph[]>([])
-  const [settings, setSettings] = useState<LLMSettings>(defaultSettings)
-  const [showSettings, setShowSettings] = useState(false)
+  const { graph, graphRef, threats, threatsRef, attackThreats, attackThreatsRef, setGraph: setGraphWithHistory, setThreats, setThreatsNoHistory, setAttackThreats, setAttackThreatsNoHistory, undo, redo, canUndo, canRedo, updatePosition } = useAppHistory(defaultGraph)
+  const { settings, showSettings, save: saveSettings, openSettings, closeSettings } = useLLMSettings()
+
   const [showChat, setShowChat] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
-  const [threats, setThreats] = useState<ThreatList | null>(null)
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [isAnalyzingAttack, setIsAnalyzingAttack] = useState(false)
+  const [bottomTab, setBottomTab] = useState<'stride' | 'attack'>('stride')
   const [flowDraft, setFlowDraft] = useState<FlowDraft>(null)
   const [isPickingZone, setIsPickingZone] = useState(false)
-  const [contextMenu, setContextMenu] = useState<{ elementId: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ elementId: string | null; x: number; y: number } | null>(null)
   const [showThreats, setShowThreats] = useState(true)
   const [canvasHeightFraction, setCanvasHeightFraction] = useState(0.667)
-  const [sidebarWidth, setSidebarWidth] = useState(320)
+  const [sidebarWidth, setSidebarWidth] = useState(340)
   const sidebarWidthRef = useRef(sidebarWidth)
   sidebarWidthRef.current = sidebarWidth
-  const [interviewMessages, setInterviewMessages] = useState<LLMMessage[]>([])
-  const [isInterviewing, setIsInterviewing] = useState(false)
-  const [showInterview, setShowInterview] = useState(false)
-  const interviewMessagesRef = useRef(interviewMessages)
-  interviewMessagesRef.current = interviewMessages
+  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null)
+  const [isDirty, setIsDirty] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
+  const currentFilePathRef = useRef(currentFilePath)
+  currentFilePathRef.current = currentFilePath
 
-  const graphRef = useRef(graph)
-  graphRef.current = graph
+  const handleError = useCallback((msg: string) => { setError(msg) }, [])
+  const interview = useInterview({ settings, graphRef, onError: handleError })
+
   const flowDraftRef = useRef(flowDraft)
   flowDraftRef.current = flowDraft
   const isPickingZoneRef = useRef(isPickingZone)
   isPickingZoneRef.current = isPickingZone
 
-  useEffect(() => {
-    window.electronAPI.loadSettings().then(json => {
-      if (json === null) return
-      try {
-        setSettings(LLMSettingsSchema.parse(JSON.parse(json)))
-      } catch { /* ignore corrupt settings */ }
-    })
-  }, [])
-
-  const threatsRef = useRef(threats)
-  threatsRef.current = threats
+  const buildPayload = useCallback(() => {
+    const t = threatsRef.current
+    const a = attackThreatsRef.current
+    const iv = interview.messagesRef.current
+    return JSON.stringify(buildFilePayload(graphRef.current, t ?? undefined, iv.length > 0 ? iv : undefined, a ?? undefined))
+  }, [graphRef, interview.messagesRef, threatsRef, attackThreatsRef])
 
   const handleSave = useCallback(async () => {
-    const t = threatsRef.current
-    const iv = interviewMessagesRef.current
-    await window.electronAPI.saveGraph(JSON.stringify(buildFilePayload(graphRef.current, t ?? undefined, iv.length > 0 ? iv : undefined)))
-  }, [])
+    const result = await window.electronAPI.saveGraph(buildPayload(), currentFilePathRef.current ?? undefined)
+    if (!result.cancelled && result.filePath !== undefined) {
+      setCurrentFilePath(result.filePath)
+      setIsDirty(false)
+      setLastSavedAt(new Date())
+    }
+  }, [buildPayload])
 
-  const setGraphWithHistory = useCallback((next: Graph, current: Graph) => {
-    setUndoStack(prev => [...prev, current])
-    setRedoStack([])
-    setGraph(next)
-  }, [])
+  const handleSaveAs = useCallback(async () => {
+    const result = await window.electronAPI.saveGraph(buildPayload())
+    if (!result.cancelled && result.filePath !== undefined) {
+      setCurrentFilePath(result.filePath)
+      setIsDirty(false)
+      setLastSavedAt(new Date())
+    }
+  }, [buildPayload])
 
   const handleLoad = useCallback(async () => {
     const result = await window.electronAPI.loadGraph()
     if (result.cancelled || result.content === undefined) return
     try {
-      setGraphWithHistory(extractGraph(result.content), graphRef.current)
-      const loadedThreats = extractThreats(result.content)
-      setThreats(loadedThreats ?? null)
-      setInterviewMessages(extractInterviewTranscript(result.content) ?? [])
+      const payload = parseFilePayload(result.content)
+      setGraphWithHistory(payload.graph)
+      setThreats(payload.threats ?? null)
+      setAttackThreats(payload.attackThreats ?? null)
+      interview.setMessages(payload.interviewTranscript ?? [])
+      setCurrentFilePath(result.filePath ?? null)
+      setIsDirty(false)
+      setLastSavedAt(new Date())
     } catch {
       alert('Failed to load diagram: file is corrupt or incompatible.')
     }
-  }, [setGraphWithHistory])
+  }, [setGraphWithHistory, interview])
 
   const handleGenerateDiagram = useCallback(async (description: string) => {
     setIsGenerating(true)
     try {
       const client = createLLMClient(settings)
-      const generated = await generateGraphFromDescription(client, description)
-      setGraphWithHistory(generated, graphRef.current)
+      const generated = await generateGraphFromDescription(client, description, settings.nlToGraphPrompt)
+      setGraphWithHistory(generated)
       setShowChat(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Generation failed')
@@ -127,26 +150,6 @@ export default function App(): JSX.Element {
       setIsGenerating(false)
     }
   }, [settings, setGraphWithHistory])
-
-  const handleUndo = useCallback(() => {
-    setUndoStack(prev => {
-      if (prev.length === 0) return prev
-      const previous = prev[prev.length - 1]!
-      setRedoStack(redo => [graphRef.current, ...redo])
-      setGraph(previous)
-      return prev.slice(0, -1)
-    })
-  }, [])
-
-  const handleRedo = useCallback(() => {
-    setRedoStack(prev => {
-      if (prev.length === 0) return prev
-      const next = prev[0]!
-      setUndoStack(undo => [...undo, graphRef.current])
-      setGraph(next)
-      return prev.slice(1)
-    })
-  }, [])
 
   const handleExportPng = useCallback(() => {
     const cy = canvasRef.current?.getCy()
@@ -164,120 +167,67 @@ export default function App(): JSX.Element {
   const handleExportJson = useCallback(() => {
     const blob = new Blob([exportToJson(graphRef.current)], { type: 'application/json' })
     triggerDownload(URL.createObjectURL(blob), 'diagram.json')
-  }, [])
+  }, [graphRef])
 
-  const handlePositionChanged = useCallback((id: string, position: { x: number; y: number }) => {
-    setGraph(g => ({
-      ...g,
-      zones: g.zones.map(z => z.id === id ? { ...z, position } : z),
-      components: g.components.map(c => c.id === id ? { ...c, position } : c)
-    }))
-  }, [])
+  const handleExportCsv = useCallback(() => {
+    const blob = new Blob([exportThreatsToCsv(threats ?? [])], { type: 'text/csv' })
+    triggerDownload(URL.createObjectURL(blob), 'threats.csv')
+  }, [threats])
 
   const handleAnalyze = useCallback(async () => {
     setIsAnalyzing(true)
-    setThreats([])
+    setBottomTab('stride')
+    const existing = threatsRef.current ?? []
+    setThreats(existing.length > 0 ? existing : [])
     try {
       const client = createLLMClient(settings)
-      const iv = interviewMessagesRef.current
+      const iv = interview.messagesRef.current
       await generateThreatsStreaming(
         client,
         graphRef.current,
-        (threat) => { setThreats(prev => [...(prev ?? []), threat]) },
-        iv.length > 0 ? iv : undefined
+        (threat) => { setThreatsNoHistory(prev => [...(prev ?? []), threat]) },
+        iv.length > 0 ? iv : undefined,
+        existing.length > 0 ? existing : undefined,
+        settings.stridePrompt
       )
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Analysis failed')
     } finally {
       setIsAnalyzing(false)
     }
-  }, [settings])
+  }, [settings, graphRef, interview.messagesRef, setThreats, setThreatsNoHistory])
+
+  const handleAnalyzeAttack = useCallback(async () => {
+    const t = threatsRef.current
+    if (t === null || t.length === 0) return
+    setIsAnalyzingAttack(true)
+    setBottomTab('attack')
+    const existing = attackThreatsRef.current ?? []
+    setAttackThreats(existing.length > 0 ? existing : [])
+    try {
+      const client = createLLMClient(settings)
+      const iv = interview.messagesRef.current
+      await generateAttackThreatsStreaming(
+        client,
+        graphRef.current,
+        t,
+        (a: AttackThreat) => { setAttackThreatsNoHistory(prev => [...(prev ?? []), a]) },
+        iv.length > 0 ? iv : undefined,
+        existing.length > 0 ? existing : undefined,
+        settings.mitrePrompt
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ATT&CK analysis failed')
+    } finally {
+      setIsAnalyzingAttack(false)
+    }
+  }, [settings, graphRef, interview.messagesRef, threatsRef, attackThreatsRef, setAttackThreats, setAttackThreatsNoHistory])
 
   const handleInterviewOpen = useCallback(async () => {
-    setShowInterview(true)
     setShowChat(false)
     setSelectedElementId(null)
-    if (interviewMessagesRef.current.length > 0) return
-    setIsInterviewing(true)
-    setInterviewMessages([
-      { role: 'user', content: '' },
-      { role: 'assistant', content: '' }
-    ])
-    try {
-      const messages = await startInterviewStreaming(
-        createLLMClient(settings),
-        graphRef.current,
-        (chunk) => {
-          setInterviewMessages(prev => {
-            const last = prev[prev.length - 1]!
-            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
-          })
-        }
-      )
-      setInterviewMessages(messages)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Interview failed')
-      setShowInterview(false)
-      setInterviewMessages([])
-    } finally {
-      setIsInterviewing(false)
-    }
-  }, [settings])
-
-  const handleInterviewSend = useCallback(async (answer: string) => {
-    const history = interviewMessagesRef.current
-    setIsInterviewing(true)
-    setInterviewMessages(prev => [
-      ...prev,
-      { role: 'user', content: answer },
-      { role: 'assistant', content: '' }
-    ])
-    try {
-      const updated = await continueInterviewStreaming(
-        createLLMClient(settings),
-        history,
-        answer,
-        (chunk) => {
-          setInterviewMessages(prev => {
-            const last = prev[prev.length - 1]!
-            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
-          })
-        }
-      )
-      setInterviewMessages(updated)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Interview failed')
-    } finally {
-      setIsInterviewing(false)
-    }
-  }, [settings])
-
-  const handleInterviewRestart = useCallback(async () => {
-    setIsInterviewing(true)
-    setInterviewMessages([
-      { role: 'user', content: '' },
-      { role: 'assistant', content: '' }
-    ])
-    try {
-      const messages = await startInterviewStreaming(
-        createLLMClient(settings),
-        graphRef.current,
-        (chunk) => {
-          setInterviewMessages(prev => {
-            const last = prev[prev.length - 1]!
-            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }]
-          })
-        }
-      )
-      setInterviewMessages(messages)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Interview failed')
-      setShowInterview(false)
-      setInterviewMessages([])
-    } finally {
-      setIsInterviewing(false)
-    }
-  }, [settings])
+    await interview.open()
+  }, [interview])
 
   const handleElementSelected = useCallback((id: string | null) => {
     const draft = flowDraftRef.current
@@ -287,10 +237,10 @@ export default function App(): JSX.Element {
     if (id !== null && picking) {
       const zone = g.zones.find(z => z.id === id)
       if (zone !== undefined) {
-        const newId = `c-${Date.now()}`
+        const allIds = [...g.zones.map(z => z.id), ...g.components.map(c => c.id), ...g.flows.map(f => f.id)]
+        const newId = nextId('c', allIds)
         setGraphWithHistory(
-          { ...g, components: [...g.components, { id: newId, name: 'New Component', type: ComponentType.Service, zoneId: zone.id }] },
-          g
+          { ...g, components: [...g.components, { id: newId, name: 'New Component', type: ComponentType.Process, zoneId: zone.id }] }
         )
         setIsPickingZone(false)
         setSelectedElementId(newId)
@@ -307,13 +257,13 @@ export default function App(): JSX.Element {
       }
       if (draft.stage === 'target') {
         const newFlow: Flow = {
-          id: `f-${Date.now()}`,
+          id: nextId('f', g.flows.map(f => f.id)),
           name: 'New Flow',
           originatorId: draft.sourceId,
           targetId: id,
           direction: FlowDirection.Unidirectional
         }
-        setGraphWithHistory({ ...g, flows: [...g.flows, newFlow] }, g)
+        setGraphWithHistory({ ...g, flows: [...g.flows, newFlow] })
         setFlowDraft(null)
         setSelectedElementId(newFlow.id)
         return
@@ -322,30 +272,82 @@ export default function App(): JSX.Element {
 
     setSelectedElementId(id)
     if (id !== null) setShowChat(false)
-  }, [setGraphWithHistory])
+  }, [setGraphWithHistory, graphRef])
 
-  const handleElementRightClicked = useCallback((elementId: string, position: { x: number; y: number }) => {
-    const zone = graphRef.current.zones.find(z => z.id === elementId)
-    if (zone !== undefined) {
+  const handleElementRightClicked = useCallback((elementId: string | null, position: { x: number; y: number }) => {
+    const g = graphRef.current
+    if (elementId === null) {
+      setContextMenu({ elementId: null, x: position.x, y: position.y })
+      return
+    }
+    const zone = g.zones.find(z => z.id === elementId)
+    const component = g.components.find(c => c.id === elementId)
+    const flow = g.flows.find(f => f.id === elementId)
+    if (zone !== undefined || component !== undefined || flow !== undefined) {
       setContextMenu({ elementId, x: position.x, y: position.y })
     }
-  }, [])
+  }, [graphRef])
 
   const handleAddZone = useCallback(() => {
     const g = graphRef.current
-    const id = `z-${Date.now()}`
-    const newGraph = { ...g, zones: [...g.zones, { id, name: 'New Zone' }] }
-    setGraphWithHistory(newGraph, g)
+    const id = nextId('z', g.zones.map(z => z.id))
+    setGraphWithHistory({ ...g, zones: [...g.zones, { id, name: 'New Zone' }] })
     setSelectedElementId(id)
-  }, [setGraphWithHistory])
+  }, [setGraphWithHistory, graphRef])
+
+  const handleAddBoundary = useCallback((clientX?: number, clientY?: number) => {
+    const g = graphRef.current
+    const id = nextId('z', g.zones.map(z => z.id))
+    const cy = canvasRef.current?.getCy()
+    let start = { x: 0, y: 0 }
+    if (cy !== null && cy !== undefined && typeof clientX === 'number' && typeof clientY === 'number') {
+      const containerRect = cy.container()?.getBoundingClientRect()
+      if (containerRect !== undefined) {
+        const pan = cy.pan()
+        const z = cy.zoom()
+        start = { x: (clientX - containerRect.left - pan.x) / z, y: (clientY - containerRect.top - pan.y) / z }
+      }
+    }
+    const endPosition = { x: start.x + 200, y: start.y }
+    setGraphWithHistory({
+      ...g,
+      zones: [...g.zones, { id, name: 'New Boundary', shape: 'line', position: start, endPosition }]
+    })
+    setSelectedElementId(id)
+  }, [setGraphWithHistory, graphRef])
+
+  const handleBoundaryHandleMoved = useCallback((zoneId: string, which: 'start' | 'mid' | 'end', position: { x: number; y: number }) => {
+    const g = graphRef.current
+    setGraphWithHistory({
+      ...g,
+      zones: g.zones.map(z => {
+        if (z.id !== zoneId) return z
+        if (which === 'start') return { ...z, position }
+        if (which === 'end') return { ...z, endPosition: position }
+        return { ...z, midPosition: position }
+      })
+    })
+  }, [setGraphWithHistory, graphRef])
+
+  const handleBoundaryStraighten = useCallback((zoneId: string) => {
+    const g = graphRef.current
+    setGraphWithHistory({
+      ...g,
+      zones: g.zones.map(z => {
+        if (z.id !== zoneId) return z
+        const { midPosition: _drop, ...rest } = z
+        return rest
+      })
+    })
+  }, [setGraphWithHistory, graphRef])
 
   const handleAddComponent = useCallback((zoneId?: string) => {
     if (typeof zoneId === 'string') {
       const g = graphRef.current
-      const id = `c-${Date.now()}`
+      const allIds = [...g.zones.map(z => z.id), ...g.components.map(c => c.id), ...g.flows.map(f => f.id)]
+      const id = nextId('c', allIds)
       setGraphWithHistory(
-        { ...g, components: [...g.components, { id, name: 'New Component', type: ComponentType.Service, zoneId }] },
-        g
+        { ...g, components: [...g.components, { id, name: 'New Component', type: ComponentType.Process, zoneId }] }
       )
       setSelectedElementId(id)
       setContextMenu(null)
@@ -353,13 +355,97 @@ export default function App(): JSX.Element {
       setIsPickingZone(true)
       setFlowDraft(null)
     }
-  }, [setGraphWithHistory])
+  }, [setGraphWithHistory, graphRef])
 
-  const handleSaveSettings = useCallback(async (updated: LLMSettings) => {
-    setSettings(updated)
-    setShowSettings(false)
-    await window.electronAPI.saveSettings(JSON.stringify(updated))
-  }, [])
+  const handleDeleteElement = useCallback((elementId: string) => {
+    const g = graphRef.current
+    const zone = g.zones.find(z => z.id === elementId)
+    if (zone !== undefined) {
+      const removedComponentIds = new Set(g.components.filter(c => c.zoneId === elementId).map(c => c.id))
+      setGraphWithHistory({
+        ...g,
+        zones: g.zones.filter(z => z.id !== elementId),
+        components: g.components.filter(c => c.zoneId !== elementId),
+        flows: g.flows.filter(f => !removedComponentIds.has(f.originatorId) && !removedComponentIds.has(f.targetId))
+      })
+      setSelectedElementId(null)
+      return
+    }
+    const component = g.components.find(c => c.id === elementId)
+    if (component !== undefined) {
+      setGraphWithHistory({
+        ...g,
+        components: g.components.filter(c => c.id !== elementId),
+        flows: g.flows.filter(f => f.originatorId !== elementId && f.targetId !== elementId)
+      })
+      setSelectedElementId(null)
+      return
+    }
+    const flow = g.flows.find(f => f.id === elementId)
+    if (flow !== undefined) {
+      setGraphWithHistory({ ...g, flows: g.flows.filter(f => f.id !== elementId) })
+      setSelectedElementId(null)
+    }
+  }, [setGraphWithHistory, graphRef])
+
+  const handleFlowEndpointChanged = useCallback((flowId: string, end: 'source' | 'target', newComponentId: string) => {
+    const g = graphRef.current
+    setGraphWithHistory({
+      ...g,
+      flows: g.flows.map(f =>
+        f.id !== flowId
+          ? f
+          : end === 'source'
+            ? { ...f, originatorId: newComponentId }
+            : { ...f, targetId: newComponentId }
+      )
+    })
+  }, [setGraphWithHistory, graphRef])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      if (mod) {
+        if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+        if (e.key === 'y') { e.preventDefault(); redo() }
+        if (e.key === 's' && !e.shiftKey) { e.preventDefault(); handleSave() }
+        if (e.key === 's' && e.shiftKey) { e.preventDefault(); handleSaveAs() }
+        return
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const target = e.target as HTMLElement | null
+        const tag = target?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable === true) return
+        if (selectedElementId !== null) {
+          e.preventDefault()
+          handleDeleteElement(selectedElementId)
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [undo, redo, handleSave, handleSaveAs, selectedElementId, handleDeleteElement])
+
+  const isInitialRender = useRef(true)
+  useEffect(() => {
+    if (isInitialRender.current) { isInitialRender.current = false; return }
+    setIsDirty(true)
+  }, [graph, threats])
+
+  useEffect(() => {
+    const fp = currentFilePathRef.current
+    if (!isDirty || fp === null) return
+    const timer = setTimeout(async () => {
+      const savePath = currentFilePathRef.current
+      if (savePath === null) return
+      try {
+        await window.electronAPI.saveGraph(buildPayload(), savePath)
+        setIsDirty(false)
+        setLastSavedAt(new Date())
+      } catch { /* silent auto-save failure */ }
+    }, 5000)
+    return () => clearTimeout(timer)
+  }, [graph, threats, isDirty, buildPayload])
 
   const handleVerticalResizeStart = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -393,22 +479,62 @@ export default function App(): JSX.Element {
   }, [])
 
   const contextMenuItems = contextMenu !== null ? (() => {
+    if (contextMenu.elementId === null) {
+      const items: { label: string; onClick: () => void }[] = [
+        { label: 'Add Zone', onClick: () => handleAddZone() },
+        { label: 'Add Boundary', onClick: () => handleAddBoundary(contextMenu.x, contextMenu.y) }
+      ]
+      if (graph.zones.length > 0) {
+        items.push({ label: 'Add Component…', onClick: () => handleAddComponent() })
+      }
+      if (graph.components.length >= 1) {
+        items.push({ label: 'Add Flow…', onClick: () => { setFlowDraft({ stage: 'source' }); setIsPickingZone(false) } })
+      }
+      return items
+    }
+    const component = graph.components.find(c => c.id === contextMenu.elementId)
+    if (component !== undefined) {
+      return [
+        {
+          label: `Start flow from ${component.name}`,
+          onClick: () => setFlowDraft({ stage: 'target', sourceId: component.id, sourceName: component.name })
+        },
+        { label: `Delete ${component.name}`, onClick: () => handleDeleteElement(component.id) }
+      ]
+    }
     const zone = graph.zones.find(z => z.id === contextMenu.elementId)
     if (zone !== undefined) {
-      return [{ label: `Add Component in ${zone.name}`, onClick: () => handleAddComponent(zone.id) }]
+      return [
+        { label: `Add Component in ${zone.name}`, onClick: () => handleAddComponent(zone.id) },
+        { label: `Delete ${zone.name} (and its contents)`, onClick: () => handleDeleteElement(zone.id) }
+      ]
+    }
+    const flow = graph.flows.find(f => f.id === contextMenu.elementId)
+    if (flow !== undefined) {
+      return [{ label: `Delete ${flow.name}`, onClick: () => handleDeleteElement(flow.id) }]
     }
     return []
   })() : []
 
+  const handleZoomIn = useCallback(() => {
+    const cy = canvasRef.current?.getCy()
+    if (cy) cy.zoom({ level: cy.zoom() * 1.2, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
+  }, [])
+  const handleZoomOut = useCallback(() => {
+    const cy = canvasRef.current?.getCy()
+    if (cy) cy.zoom({ level: cy.zoom() / 1.2, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } })
+  }, [])
+  const handleFit = useCallback(() => { canvasRef.current?.getCy()?.fit(undefined, 40) }, [])
+
   const sideContent = (): JSX.Element => {
-    if (showInterview) {
+    if (interview.showInterview) {
       return (
         <InterviewPanel
-          messages={interviewMessages}
-          onSend={handleInterviewSend}
-          onClose={() => setShowInterview(false)}
-          onRestart={handleInterviewRestart}
-          isLoading={isInterviewing}
+          messages={interview.messages}
+          onSend={interview.send}
+          onClose={interview.close}
+          onRestart={interview.restart}
+          isLoading={interview.isInterviewing}
         />
       )
     }
@@ -441,7 +567,7 @@ export default function App(): JSX.Element {
         <PropertiesPanel
           graph={graph}
           elementId={selectedElementId}
-          onUpdate={g => setGraphWithHistory(g, graph)}
+          onUpdate={setGraphWithHistory}
           onClose={() => setSelectedElementId(null)}
         />
       )
@@ -460,151 +586,310 @@ export default function App(): JSX.Element {
     )
   }
 
+  const t = theme
+  const fileName = currentFilePath !== null
+    ? currentFilePath.split(/[/\\]/).pop()?.replace(/\.tninja$/i, '') ?? 'untitled'
+    : null
+
+  const toolBtn = (t: Theme): React.CSSProperties => ({
+    height: 30, padding: '0 11px',
+    background: 'transparent', border: '1px solid transparent',
+    color: t.text, borderRadius: 6, cursor: 'pointer',
+    fontFamily: fonts.sans, fontSize: 13, fontWeight: 450,
+    display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, flexShrink: 0,
+  })
+
+  const primaryToolBtn = (t: Theme): React.CSSProperties => ({
+    ...toolBtn(t),
+    background: t.accentBg,
+    border: `1px solid ${t.accent}40`,
+    color: t.accentDim,
+    fontWeight: 500,
+  })
+
+  const disabledToolBtn = (t: Theme): React.CSSProperties => ({
+    ...toolBtn(t),
+    color: t.textDim,
+    cursor: 'not-allowed',
+  })
+
+  const chevron = <svg width="9" height="9" viewBox="0 0 9 9" style={{ opacity: 0.6 }}><path d="M1.5 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" /></svg>
+
   return (
-    <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <header style={headerStyle}>
-        <span style={brandStyle}>ThreatNinja</span>
-        <button onClick={handleSave} style={toolBtnStyle}>Save</button>
-        <button onClick={handleLoad} style={toolBtnStyle}>Open</button>
-        <div style={separatorStyle} />
-        <button onClick={handleUndo} disabled={undoStack.length === 0} style={undoStack.length === 0 ? disabledToolBtnStyle : toolBtnStyle}>Undo</button>
-        <button onClick={handleRedo} disabled={redoStack.length === 0} style={redoStack.length === 0 ? disabledToolBtnStyle : toolBtnStyle}>Redo</button>
-        <div style={separatorStyle} />
-        <button aria-label="Generate Diagram" onClick={() => { setShowChat(true); setSelectedElementId(null); setFlowDraft(null) }} style={toolBtnStyle}>Generate</button>
-        <button onClick={handleAnalyze} disabled={isAnalyzing} style={isAnalyzing ? disabledToolBtnStyle : toolBtnStyle}>
-          {isAnalyzing ? 'Analyzing…' : 'Analyze'}
-        </button>
-        <button onClick={handleInterviewOpen} disabled={isInterviewing} style={isInterviewing ? disabledToolBtnStyle : toolBtnStyle}>
-          {isInterviewing ? 'Interviewing…' : interviewMessages.length > 0 ? 'Interview ●' : 'Interview'}
-        </button>
-        <button
-          onClick={() => setShowThreats(s => !s)}
-          style={toolBtnStyle}
-          aria-label="Toggle Threats"
-        >
-          {showThreats ? 'Threats ▼' : 'Threats ▲'}
-        </button>
-        {(isGenerating || isAnalyzing || isInterviewing) && (
-          <div role="status" aria-label="Loading" style={spinnerStyle} />
-        )}
-        <div style={separatorStyle} />
-        <button aria-label="Export PNG" onClick={handleExportPng} style={toolBtnStyle}>PNG</button>
-        <button aria-label="Export SVG" onClick={handleExportSvg} style={toolBtnStyle}>SVG</button>
-        <button aria-label="Export JSON" onClick={handleExportJson} style={toolBtnStyle}>JSON</button>
-        <div style={separatorStyle} />
-        <button onClick={() => setShowSettings(true)} style={toolBtnStyle}>Settings</button>
-      </header>
-      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <div style={{ flex: showThreats ? canvasHeightFraction : 1, overflow: 'hidden', minHeight: 0 }}>
-            <Canvas
-              ref={canvasRef}
-              graph={graph}
-              onElementSelected={handleElementSelected}
-              onElementRightClicked={handleElementRightClicked}
-              onPositionChanged={handlePositionChanged}
-            />
+    <ThemeContext.Provider value={theme}>
+      <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: t.bg, color: t.text, fontFamily: fonts.sans }}>
+        <header style={{ height: 52, background: t.bgAlt, borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', padding: '0 16px', gap: 0, flexShrink: 0, WebkitAppRegion: 'drag' } as React.CSSProperties}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginRight: 18 }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: 7,
+              background: `linear-gradient(135deg, ${t.accent}, ${t.accentDim})`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontWeight: 700, fontSize: 13,
+            }}>TN</div>
+            <span style={{ fontSize: 14.5, fontWeight: 600, color: t.text, letterSpacing: -0.2 }}>Threat Ninja</span>
+            <span style={{ fontSize: 11, color: isDirty ? t.accent : t.textDim, padding: '2px 7px', background: t.bgInset, borderRadius: 4, marginLeft: 4, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {fileName ?? 'untitled'}{isDirty ? ' ●' : ''}
+            </span>
           </div>
-          {showThreats && (
-            <>
-              <div
-                data-testid="canvas-threats-resize"
-                onMouseDown={handleVerticalResizeStart}
-                style={vDividerStyle}
-              />
-              <div style={{ flex: 1 - canvasHeightFraction, overflow: 'hidden', minHeight: 0 }}>
-                <ThreatsPanel
-                  threats={threats}
-                  selectedId={selectedElementId ?? undefined}
-                  onThreatSelected={setSelectedElementId}
-                  onThreatsChange={setThreats}
-                />
-              </div>
-            </>
+
+          <div style={{ width: 1, height: 22, background: t.border, marginRight: 12 }} />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <ToolbarDropdown label="File" items={[
+              { label: 'Save', onClick: handleSave, shortcut: 'Ctrl+S' },
+              { label: 'Save As…', onClick: handleSaveAs, shortcut: 'Ctrl+Shift+S' },
+              { label: 'Open', onClick: handleLoad, shortcut: 'Ctrl+O' },
+            ]} />
+            <ToolbarDropdown label="Edit" items={[
+              { label: 'Undo', onClick: undo, disabled: !canUndo, shortcut: 'Ctrl+Z' },
+              { label: 'Redo', onClick: redo, disabled: !canRedo, shortcut: 'Ctrl+Y' },
+            ]} />
+            <div style={{ width: 1, height: 18, background: t.border, margin: '0 8px' }} />
+            <button aria-label="Generate Diagram" onClick={() => { setShowChat(true); setSelectedElementId(null); setFlowDraft(null) }} style={primaryToolBtn(t)}>Generate {chevron}</button>
+            {(isAnalyzing || isAnalyzingAttack) ? (
+              <button disabled style={disabledToolBtn(t)} aria-label={isAnalyzing ? 'Analyzing' : 'Mapping ATT&CK'}>
+                {isAnalyzing ? 'Analyzing…' : 'Mapping ATT&CK…'}
+              </button>
+            ) : (
+              <ToolbarDropdown label="Analyze" items={[
+                { label: 'STRIDE', onClick: handleAnalyze },
+                {
+                  label: 'ATT&CK',
+                  onClick: handleAnalyzeAttack,
+                  disabled: threats === null || threats.length === 0,
+                },
+              ]} />
+            )}
+            <button onClick={handleInterviewOpen} disabled={interview.isInterviewing} style={interview.isInterviewing ? disabledToolBtn(t) : toolBtn(t)}>
+              {interview.isInterviewing ? 'Interviewing…' : interview.messages.length > 0 ? 'Interview ●' : 'Interview'} {chevron}
+            </button>
+            <div style={{ width: 1, height: 18, background: t.border, margin: '0 8px' }} />
+            <button onClick={() => setShowThreats(s => !s)} style={toolBtn(t)} aria-label="Toggle Threats">
+              {showThreats ? 'Hide Threats' : 'Show Threats'}
+            </button>
+            <ToolbarDropdown label="Export" items={[
+              { label: 'Export PNG', onClick: handleExportPng },
+              { label: 'Export SVG', onClick: handleExportSvg },
+              { label: 'Export JSON', onClick: handleExportJson },
+              { label: 'Export CSV', onClick: handleExportCsv },
+            ]} />
+            <div style={{ width: 1, height: 18, background: t.border, margin: '0 8px' }} />
+            <button onClick={openSettings} style={toolBtn(t)}>Settings</button>
+          </div>
+
+          {(isGenerating || isAnalyzing || interview.isInterviewing) && (
+            <div role="status" aria-label="Loading" style={{
+              width: 14, height: 14, marginLeft: 8,
+              border: `2px solid ${t.accent}`, borderTopColor: 'transparent',
+              borderRadius: '50%', animation: 'spin 0.7s linear infinite', flexShrink: 0,
+            }} />
           )}
+
+          <div style={{ flex: 1 }} />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            height: 30, padding: '0 10px 0 12px',
+            background: t.bgInset, borderRadius: 6, fontSize: 12, color: t.textMuted,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: isDirty ? '#d97706' : lastSavedAt !== null ? '#16a34a' : t.textDim }} />
+            <span style={{ color: t.text, fontWeight: 500 }}>
+              {isDirty ? 'Unsaved changes' : lastSavedAt !== null ? 'Saved' : 'Not saved'}
+            </span>
+            {lastSavedAt !== null && !isDirty && (
+              <span style={{ color: t.textDim }}>&middot; {lastSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            )}
+          </div>
+
+          <button onClick={toggleTheme} aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'} title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            style={{
+              marginLeft: 8, width: 30, height: 30, borderRadius: 6, cursor: 'pointer',
+              background: t.bgInset, border: `1px solid ${t.border}`, color: t.textMuted,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+            {isDark ? (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                <circle cx="7" cy="7" r="3" />
+                <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.6 2.6l1.1 1.1M10.3 10.3l1.1 1.1M2.6 11.4l1.1-1.1M10.3 3.7l1.1-1.1" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11.5 8.5A4.5 4.5 0 0 1 5.5 2.5a5 5 0 1 0 6 6z" />
+              </svg>
+            )}
+          </button>
+
+          <div style={{ width: 1, height: 18, background: t.border, margin: '0 8px' }} />
+          <button onClick={() => window.electronAPI.windowMinimize()} aria-label="Minimize" style={winCtrlStyle(t)}>
+            <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" strokeWidth="1.2" /></svg>
+          </button>
+          <button onClick={() => window.electronAPI.windowMaximize()} aria-label="Maximize" style={winCtrlStyle(t)}>
+            <svg width="12" height="12" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>
+          </button>
+          <button onClick={() => window.electronAPI.windowClose()} aria-label="Close window" style={{ ...winCtrlStyle(t), marginRight: -8 }}>
+            <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
+          </button>
+          </div>
+        </header>
+
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            <div style={{ flex: showThreats ? canvasHeightFraction : 1, position: 'relative', minHeight: 0, padding: 16 }}>
+              <div style={{
+                position: 'absolute', inset: 16, borderRadius: 10,
+                border: `1px solid ${t.border}`, background: t.bgAlt,
+                boxShadow: isDark ? 'none' : '0 1px 2px rgba(0,0,0,0.03)',
+                overflow: 'hidden',
+              }}>
+                <Canvas
+                  ref={canvasRef}
+                  graph={graph}
+                  onElementSelected={handleElementSelected}
+                  onElementRightClicked={handleElementRightClicked}
+                  onPositionChanged={updatePosition}
+                  onFlowEndpointChanged={handleFlowEndpointChanged}
+                  onBoundaryHandleMoved={handleBoundaryHandleMoved}
+                  onBoundaryStraighten={handleBoundaryStraighten}
+                />
+                <div style={{ position: 'absolute', top: 14, left: 16, display: 'flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: t.text }}>System Diagram</span>
+                  <span style={{ fontSize: 12, color: t.textMuted }}>
+                    {graph.components.length} components &middot; {graph.flows.length} flows
+                  </span>
+                </div>
+                <div style={{
+                  position: 'absolute', top: 14, right: 16, display: 'flex', gap: 4,
+                  background: t.bgAlt, border: `1px solid ${t.border}`, borderRadius: 6, padding: 2,
+                }}>
+                  {[
+                    { label: '−', onClick: handleZoomOut },
+                    { label: '100%', onClick: handleFit },
+                    { label: '+', onClick: handleZoomIn },
+                  ].map((btn, i) => (
+                    <button key={i} onClick={btn.onClick} style={{
+                      height: 24, padding: '0 8px', background: 'transparent', border: 'none',
+                      color: t.textMuted, fontSize: 12, cursor: 'pointer', borderRadius: 4, minWidth: 24,
+                      fontFamily: fonts.sans,
+                    }}>{btn.label}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {showThreats && (
+              <>
+                <div
+                  data-testid="canvas-threats-resize"
+                  onMouseDown={handleVerticalResizeStart}
+                  style={{ height: 1, cursor: 'row-resize', background: t.border, flexShrink: 0 }}
+                />
+                <div style={{ flex: 1 - canvasHeightFraction, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', borderBottom: `1px solid ${t.border}`, background: t.bgAlt, flexShrink: 0 }}>
+                    {([
+                      { id: 'stride' as const, label: 'Threats', count: threats?.length },
+                      { id: 'attack' as const, label: 'ATT&CK', count: attackThreats?.length },
+                    ]).map(tab => {
+                      const active = bottomTab === tab.id
+                      return (
+                        <button
+                          key={tab.id}
+                          onClick={() => setBottomTab(tab.id)}
+                          style={{
+                            padding: '10px 18px', background: 'transparent',
+                            border: 'none', borderBottom: active ? `2px solid ${t.accent}` : '2px solid transparent',
+                            color: active ? t.text : t.textMuted, cursor: 'pointer',
+                            fontFamily: 'inherit', fontSize: 13, fontWeight: 500,
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                          }}
+                        >
+                          {tab.label}
+                          {tab.count !== undefined && tab.count > 0 && (
+                            <span style={{ fontSize: 11, color: t.textMuted, padding: '1px 6px', background: t.bgInset, borderRadius: 8 }}>
+                              {tab.count}
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+                    {bottomTab === 'stride' ? (
+                      <ThreatsPanel
+                        threats={threats}
+                        isAnalyzing={isAnalyzing}
+                        selectedId={selectedElementId ?? undefined}
+                        onThreatSelected={setSelectedElementId}
+                        onThreatsChange={setThreats}
+                        graph={graph}
+                      />
+                    ) : (
+                      <AttackPanel
+                        attackThreats={attackThreats}
+                        isAnalyzing={isAnalyzingAttack}
+                        selectedId={selectedElementId ?? undefined}
+                        onAttackThreatSelected={setSelectedElementId}
+                        onAttackThreatsChange={setAttackThreats}
+                        graph={graph}
+                        threats={threats}
+                        onRelatedThreatClick={(threatId) => {
+                          const matched = threats?.find(th => th.id === threatId)
+                          if (matched !== undefined) {
+                            setSelectedElementId(matched.affectedId)
+                            setBottomTab('stride')
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <div
+            data-testid="content-sidebar-resize"
+            onMouseDown={handleHorizontalResizeStart}
+            style={{ width: 1, cursor: 'col-resize', background: t.border, flexShrink: 0 }}
+          />
+          <div style={{ width: sidebarWidth, minWidth: sidebarWidth, height: '100%', background: t.bgAlt, borderLeft: `1px solid ${t.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {sideContent()}
+          </div>
         </div>
-        <div
-          data-testid="content-sidebar-resize"
-          onMouseDown={handleHorizontalResizeStart}
-          style={hDividerStyle}
-        />
-        <div style={{ width: sidebarWidth, minWidth: sidebarWidth, height: '100%', background: '#16162a', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {sideContent()}
-        </div>
+
+        {error !== null && (
+          <div role="alert" onClick={() => setError(null)} style={{
+            position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+            background: isDark ? '#3a1a1a' : '#fef2f2', color: isDark ? '#f87171' : '#dc2626',
+            border: `1px solid ${isDark ? '#5a2a2a' : '#fecaca'}`,
+            borderRadius: 6, padding: '10px 20px', fontSize: 13, cursor: 'pointer',
+            zIndex: 200, maxWidth: 500, textAlign: 'center',
+          }}>
+            {error}
+          </div>
+        )}
+        {contextMenu !== null && (
+          <ContextMenu
+            items={contextMenuItems}
+            position={{ x: contextMenu.x, y: contextMenu.y }}
+            onDismiss={() => setContextMenu(null)}
+          />
+        )}
+        {showSettings && (
+          <SettingsPanel
+            settings={settings}
+            onSave={saveSettings}
+            onClose={closeSettings}
+          />
+        )}
       </div>
-      {error !== null && (
-        <div role="alert" onClick={() => setError(null)} style={errorStyle}>
-          {error}
-        </div>
-      )}
-      {contextMenu !== null && (
-        <ContextMenu
-          items={contextMenuItems}
-          position={{ x: contextMenu.x, y: contextMenu.y }}
-          onDismiss={() => setContextMenu(null)}
-        />
-      )}
-      {showSettings && (
-        <SettingsPanel
-          settings={settings}
-          onSave={handleSaveSettings}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
-    </div>
+    </ThemeContext.Provider>
   )
 }
 
-const headerStyle: React.CSSProperties = {
-  background: '#1a1a2e', borderBottom: '1px solid #3a3a6e',
-  display: 'flex', alignItems: 'center', gap: '4px', padding: '5px 10px', flexShrink: 0
-}
-
-const brandStyle: React.CSSProperties = {
-  fontSize: '15px', fontWeight: 'bold', color: '#a0a0ff', marginRight: '8px', whiteSpace: 'nowrap'
-}
-
-const separatorStyle: React.CSSProperties = {
-  width: '1px', height: '18px', background: '#3a3a6e', margin: '0 2px', flexShrink: 0
-}
-
-const toolBtnStyle: React.CSSProperties = {
-  padding: '4px 10px', background: '#2a2a4e', color: '#e0e0ff',
-  border: '1px solid #4a4a7e', borderRadius: '4px', cursor: 'pointer', fontSize: '12px',
-  whiteSpace: 'nowrap', flexShrink: 0
-}
-
-const disabledToolBtnStyle: React.CSSProperties = {
-  padding: '4px 10px', background: '#1a1a3e', color: '#6060a0',
-  border: '1px solid #4a4a7e', borderRadius: '4px', cursor: 'not-allowed', fontSize: '12px',
-  whiteSpace: 'nowrap', flexShrink: 0
-}
-
-const vDividerStyle: React.CSSProperties = {
-  height: '5px', cursor: 'row-resize', background: '#2a2a4e', flexShrink: 0,
-  borderTop: '1px solid #3a3a6e', borderBottom: '1px solid #3a3a6e'
-}
-
-const hDividerStyle: React.CSSProperties = {
-  width: '5px', cursor: 'col-resize', background: '#2a2a4e', flexShrink: 0,
-  borderLeft: '1px solid #3a3a6e', borderRight: '1px solid #3a3a6e'
-}
-
-const spinnerStyle: React.CSSProperties = {
-  width: 14, height: 14,
-  border: '2px solid #4a4aee',
-  borderTopColor: 'transparent',
-  borderRadius: '50%',
-  animation: 'spin 0.7s linear infinite',
-  flexShrink: 0
-}
-
-const errorStyle: React.CSSProperties = {
-  position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
-  background: '#5a1a1a', color: '#ffaaaa', border: '1px solid #8a3a3a',
-  borderRadius: '6px', padding: '10px 20px', fontSize: '13px', cursor: 'pointer',
-  zIndex: 200, maxWidth: '500px', textAlign: 'center'
-}
+const winCtrlStyle = (t: Theme): React.CSSProperties => ({
+  width: 28, height: 28, borderRadius: 6, cursor: 'pointer',
+  background: 'transparent', border: 'none', color: t.textMuted,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+})
 
 const triggerDownload = (href: string, filename: string): void => {
   const a = document.createElement('a')

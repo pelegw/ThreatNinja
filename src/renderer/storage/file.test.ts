@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFilePayload, extractGraph, extractThreats, extractInterviewTranscript, FilePayloadSchema } from './file'
+import { buildFilePayload, extractGraph, extractThreats, extractAttackThreats, extractInterviewTranscript, FilePayloadSchema } from './file'
 import { ComponentType, FlowDirection, GraphSchema } from '../model/graph'
 import { StrideCategory } from '../model/threats'
 import type { Threat } from '../model/threats'
@@ -9,7 +9,7 @@ const makeGraph = () =>
   GraphSchema.parse({
     id: 'g1', name: 'My System',
     zones: [{ id: 'z1', name: 'DMZ' }],
-    components: [{ id: 'c1', name: 'Server', type: ComponentType.Server, zoneId: 'z1' }],
+    components: [{ id: 'c1', name: 'Server', type: ComponentType.Process, zoneId: 'z1' }],
     flows: [{ id: 'f1', name: 'HTTPS', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }]
   })
 
@@ -127,6 +127,24 @@ describe('FilePayloadSchema — interviewTranscript field', () => {
   it('throws when transcript contains a message with an invalid role', () => {
     const bad = { version: '1', graph: makeGraph(), interviewTranscript: [{ role: 'system', content: 'x' }] }
     expect(() => FilePayloadSchema.parse(bad)).toThrow()
+  })
+})
+
+describe('extractAttackThreats', () => {
+  it('returns attack threats from a file that includes them', async () => {
+    const { AttackTactic } = await import('../model/attackThreats')
+    const sample = [{
+      id: 'a1', tactic: AttackTactic.InitialAccess, techniqueId: 'T1190',
+      techniqueName: 'Exploit Public-Facing Application', title: 'X', description: 'd',
+      affectedId: 'c1', severity: 'high' as const,
+    }]
+    const json = JSON.stringify(buildFilePayload(makeGraph(), undefined, undefined, sample))
+    expect(extractAttackThreats(json)).toEqual(sample)
+  })
+
+  it('returns undefined for a file without attack threats (backward compatible)', () => {
+    const json = JSON.stringify(buildFilePayload(makeGraph()))
+    expect(extractAttackThreats(json)).toBeUndefined()
   })
 })
 

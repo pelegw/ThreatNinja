@@ -6,7 +6,7 @@ import { ComponentType, FlowDirection, GraphSchema } from '../model/graph'
 const sampleGraph = GraphSchema.parse({
   id: 'g1', name: 'My System',
   zones: [{ id: 'z1', name: 'Internal' }],
-  components: [{ id: 'c1', name: 'API', type: ComponentType.Service, zoneId: 'z1' }],
+  components: [{ id: 'c1', name: 'API', type: ComponentType.Process, zoneId: 'z1' }],
   flows: [{ id: 'f1', name: 'Call', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }]
 })
 

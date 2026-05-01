@@ -1,6 +1,8 @@
 node_modules/
 out/
 dist/
-.claude/settings.local.json
+.claude/
+plans/
+CLAUDE.md
 tsconfig.web.tsbuildinfo
 *.local

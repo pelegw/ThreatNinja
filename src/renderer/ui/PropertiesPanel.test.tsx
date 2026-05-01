@@ -14,8 +14,8 @@ const graph: Graph = GraphSchema.parse({
     { id: 'z2', name: 'DMZ' }
   ],
   components: [
-    { id: 'c1', name: 'API Server', type: ComponentType.Service, zoneId: 'z1' },
-    { id: 'c2', name: 'Database', type: ComponentType.Database, zoneId: 'z1' }
+    { id: 'c1', name: 'API Server', type: ComponentType.Process, zoneId: 'z1', icon: 'server' },
+    { id: 'c2', name: 'Database', type: ComponentType.DataStore, zoneId: 'z1' }
   ],
   flows: [
     { id: 'f1', name: 'SQL Query', originatorId: 'c1', targetId: 'c2', direction: FlowDirection.Bidirectional }
@@ -79,6 +79,46 @@ describe('PropertiesPanel — Zone', () => {
     fireEvent.click(screen.getByRole('button', { name: /close/i }))
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('shows a Shape select with Rectangle as the default', () => {
+    render(<PropertiesPanel graph={graph} elementId="z1" onUpdate={noop} onClose={noop} />)
+    const select = screen.getByRole('combobox', { name: /shape/i })
+    expect(select).toHaveValue('rect')
+  })
+
+  it('switches the zone shape to line and synthesizes endPosition when chosen', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="z1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /shape/i }), { target: { value: 'line' } })
+    const updated = onUpdate.mock.calls[0]?.[0].zones.find((z: { id: string }) => z.id === 'z1')
+    expect(updated.shape).toBe('line')
+    expect(updated.endPosition).toBeDefined()
+    expect(typeof updated.endPosition.x).toBe('number')
+    expect(typeof updated.endPosition.y).toBe('number')
+  })
+
+  it('drops endPosition and midPosition when switching shape back to rectangle', () => {
+    const lineGraph = {
+      ...graph,
+      zones: [{ ...graph.zones[0]!, shape: 'line' as const, position: { x: 0, y: 0 }, endPosition: { x: 100, y: 0 }, midPosition: { x: 50, y: 50 } }, graph.zones[1]!]
+    }
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={lineGraph} elementId="z1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /shape/i }), { target: { value: 'rect' } })
+    const updated = onUpdate.mock.calls[0]?.[0].zones.find((z: { id: string }) => z.id === 'z1')
+    expect(updated.shape).toBe('rect')
+    expect(updated.endPosition).toBeUndefined()
+    expect(updated.midPosition).toBeUndefined()
+  })
+
+  it('hides the Parent Zone selector when shape is line', () => {
+    const lineGraph = {
+      ...graph,
+      zones: [{ ...graph.zones[0]!, shape: 'line' as const, position: { x: 0, y: 0 }, endPosition: { x: 100, y: 0 } }, graph.zones[1]!]
+    }
+    render(<PropertiesPanel graph={lineGraph} elementId="z1" onUpdate={noop} onClose={noop} />)
+    expect(screen.queryByRole('combobox', { name: /parent zone/i })).not.toBeInTheDocument()
+  })
 })
 
 describe('PropertiesPanel — Component', () => {
@@ -90,7 +130,7 @@ describe('PropertiesPanel — Component', () => {
   it('shows the component type as a select', () => {
     render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={noop} onClose={noop} />)
     const select = screen.getByRole('combobox', { name: /type/i })
-    expect(select).toHaveValue(ComponentType.Service)
+    expect(select).toHaveValue(ComponentType.Process)
   })
 
   it('shows all component type options', () => {
@@ -128,15 +168,71 @@ describe('PropertiesPanel — Component', () => {
     const onUpdate = vi.fn()
     render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={onUpdate} onClose={noop} />)
     fireEvent.change(screen.getByRole('combobox', { name: /type/i }), {
-      target: { value: ComponentType.Server }
+      target: { value: ComponentType.External }
     })
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         components: expect.arrayContaining([
-          expect.objectContaining({ id: 'c1', type: ComponentType.Server })
+          expect.objectContaining({ id: 'c1', type: ComponentType.External })
         ])
       })
     )
+  })
+
+  it('clears the icon when component type changes (icons are scoped per type)', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /type/i }), {
+      target: { value: ComponentType.External }
+    })
+    const updated = onUpdate.mock.calls[0]?.[0].components.find((c: { id: string }) => c.id === 'c1')
+    expect(updated.icon).toBeUndefined()
+  })
+
+  it('shows the icon picker with the current icon selected', () => {
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={noop} onClose={noop} />)
+    const select = screen.getByRole('combobox', { name: /icon/i })
+    expect(select).toHaveValue('server')
+  })
+
+  it('offers a "(none)" icon option so the icon can be cleared', () => {
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={noop} onClose={noop} />)
+    const select = screen.getByRole('combobox', { name: /icon/i })
+    expect(select.querySelector('option[value=""]')).toBeInTheDocument()
+  })
+
+  it('limits icon options to those valid for the component type', () => {
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={noop} onClose={noop} />)
+    const select = screen.getByRole('combobox', { name: /icon/i })
+    expect(select.querySelector('option[value="server"]')).toBeInTheDocument()
+    expect(select.querySelector('option[value="cog"]')).toBeInTheDocument()
+    expect(select.querySelector('option[value="worker"]')).toBeInTheDocument()
+    expect(select.querySelector('option[value="database"]')).toBeNull()
+  })
+
+  it('calls onUpdate with the chosen icon when icon changes', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /icon/i }), {
+      target: { value: 'cog' }
+    })
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.arrayContaining([
+          expect.objectContaining({ id: 'c1', icon: 'cog' })
+        ])
+      })
+    )
+  })
+
+  it('calls onUpdate clearing the icon when "(none)" is chosen', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /icon/i }), {
+      target: { value: '' }
+    })
+    const updated = onUpdate.mock.calls[0]?.[0].components.find((c: { id: string }) => c.id === 'c1')
+    expect(updated.icon).toBeUndefined()
   })
 
   it('calls onUpdate when zone is reassigned', () => {
@@ -167,10 +263,39 @@ describe('PropertiesPanel — Flow', () => {
     expect(select).toHaveValue(FlowDirection.Bidirectional)
   })
 
-  it('shows the originator and target as read-only info', () => {
+  it('shows the source and target as editable selects with the current components selected', () => {
     render(<PropertiesPanel graph={graph} elementId="f1" onUpdate={noop} onClose={noop} />)
-    expect(screen.getByText('API Server')).toBeInTheDocument()
-    expect(screen.getByText('Database')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /source/i })).toHaveValue('c1')
+    expect(screen.getByRole('combobox', { name: /target/i })).toHaveValue('c2')
+  })
+
+  it('lists every component as a source option', () => {
+    render(<PropertiesPanel graph={graph} elementId="f1" onUpdate={noop} onClose={noop} />)
+    const select = screen.getByRole('combobox', { name: /source/i })
+    expect(select.querySelector('option[value="c1"]')).toBeInTheDocument()
+    expect(select.querySelector('option[value="c2"]')).toBeInTheDocument()
+  })
+
+  it('calls onUpdate with the new originatorId when source changes', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="f1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /source/i }), { target: { value: 'c2' } })
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        flows: expect.arrayContaining([expect.objectContaining({ id: 'f1', originatorId: 'c2' })])
+      })
+    )
+  })
+
+  it('calls onUpdate with the new targetId when target changes', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="f1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /target/i }), { target: { value: 'c1' } })
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        flows: expect.arrayContaining([expect.objectContaining({ id: 'f1', targetId: 'c1' })])
+      })
+    )
   })
 
   it('calls onUpdate when flow name changes', () => {

@@ -1,5 +1,7 @@
 import { ComponentType, FlowDirection } from '../model/graph'
 import type { Graph } from '../model/graph'
+import { ICONS_BY_TYPE } from '../canvas/shapes'
+import { useTheme, inputStyle, closeBtnStyle, panelHeaderStyle, sectionTitleStyle } from './tokens'
 
 type Props = {
   graph: Graph
@@ -9,17 +11,21 @@ type Props = {
 }
 
 export default function PropertiesPanel({ graph, elementId, onUpdate, onClose }: Props): JSX.Element {
+  const t = useTheme()
   const zone = graph.zones.find(z => z.id === elementId)
   const component = graph.components.find(c => c.id === elementId)
   const flow = graph.flows.find(f => f.id === elementId)
 
   return (
-    <div style={panelStyle}>
-      <div style={headerStyle}>
-        <span style={titleStyle}>
+    <div style={{
+      width: '100%', height: '100%', background: t.bgAlt,
+      display: 'flex', flexDirection: 'column', overflow: 'hidden'
+    }}>
+      <div style={panelHeaderStyle(t)}>
+        <span style={sectionTitleStyle(t)}>
           {zone !== undefined ? 'Zone' : component !== undefined ? 'Component' : 'Flow'}
         </span>
-        <button onClick={onClose} style={closeBtnStyle} aria-label="Close">✕</button>
+        <button onClick={onClose} style={closeBtnStyle(t)} aria-label="Close">✕</button>
       </div>
 
       {zone !== undefined && (
@@ -52,41 +58,59 @@ function ZoneFields({ zone, allZones, onUpdate }: {
   allZones: Graph['zones']
   onUpdate: (z: typeof zone) => void
 }) {
+  const t = useTheme()
+  const isLine = zone.shape === 'line'
   return (
     <div style={fieldsStyle}>
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Name
-        <input
-          style={inputStyle}
-          value={zone.name}
-          onChange={e => onUpdate({ ...zone, name: e.target.value })}
-        />
+        <input style={inputStyle(t)} value={zone.name} onChange={e => onUpdate({ ...zone, name: e.target.value })} />
       </label>
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Description
-        <input
-          style={inputStyle}
-          value={zone.description ?? ''}
-          onChange={e => onUpdate({ ...zone, ...(e.target.value ? { description: e.target.value } : {}) })}
-        />
+        <input style={inputStyle(t)} value={zone.description ?? ''} onChange={e => onUpdate({ ...zone, ...(e.target.value ? { description: e.target.value } : {}) })} />
       </label>
-      <label style={labelStyle}>
-        Parent Zone
+      <label style={labelStyle(t)}>
+        Shape
         <select
-          style={selectStyle}
-          value={zone.parentId ?? ''}
+          style={{ ...inputStyle(t), cursor: 'pointer' }}
+          value={zone.shape ?? 'rect'}
           onChange={e => {
-            const val = e.target.value
-            onUpdate(val ? { ...zone, parentId: val } : { ...zone, parentId: undefined })
+            const next = e.target.value as 'rect' | 'line'
+            if (next === 'line') {
+              const start = zone.position ?? { x: 0, y: 0 }
+              const endPosition = zone.endPosition ?? { x: start.x + 200, y: start.y }
+              onUpdate({ ...zone, shape: 'line', position: start, endPosition, parentId: undefined })
+            } else {
+              const { endPosition: _e, midPosition: _m, ...rest } = zone
+              onUpdate({ ...rest, shape: 'rect' })
+            }
           }}
-          aria-label="Parent Zone"
+          aria-label="Shape"
         >
-          <option value="">None</option>
-          {allZones.filter(z => z.id !== zone.id).map(z => (
-            <option key={z.id} value={z.id}>{z.name}</option>
-          ))}
+          <option value="rect">Rectangle</option>
+          <option value="line">Line</option>
         </select>
       </label>
+      {!isLine && (
+        <label style={labelStyle(t)}>
+          Parent Zone
+          <select
+            style={{ ...inputStyle(t), cursor: 'pointer' }}
+            value={zone.parentId ?? ''}
+            onChange={e => {
+              const val = e.target.value
+              onUpdate(val ? { ...zone, parentId: val } : { ...zone, parentId: undefined })
+            }}
+            aria-label="Parent Zone"
+          >
+            <option value="">None</option>
+            {allZones.filter(z => z.id !== zone.id && z.shape !== 'line').map(z => (
+              <option key={z.id} value={z.id}>{z.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
     </div>
   )
 }
@@ -96,22 +120,23 @@ function ComponentFields({ component, zones, onUpdate }: {
   zones: Graph['zones']
   onUpdate: (c: typeof component) => void
 }) {
+  const t = useTheme()
   return (
     <div style={fieldsStyle}>
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Name
-        <input
-          style={inputStyle}
-          value={component.name}
-          onChange={e => onUpdate({ ...component, name: e.target.value })}
-        />
+        <input style={inputStyle(t)} value={component.name} onChange={e => onUpdate({ ...component, name: e.target.value })} />
       </label>
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Type
         <select
-          style={selectStyle}
+          style={{ ...inputStyle(t), cursor: 'pointer' }}
           value={component.type}
-          onChange={e => onUpdate({ ...component, type: e.target.value as ComponentType })}
+          onChange={e => {
+            const nextType = e.target.value as ComponentType
+            const { icon: _drop, ...rest } = component
+            onUpdate({ ...rest, type: nextType })
+          }}
           aria-label="Type"
         >
           {Object.entries(ComponentType).map(([label, value]) => (
@@ -119,14 +144,31 @@ function ComponentFields({ component, zones, onUpdate }: {
           ))}
         </select>
       </label>
-      <label style={labelStyle}>
-        Zone
+      <label style={labelStyle(t)}>
+        Icon
         <select
-          style={selectStyle}
-          value={component.zoneId}
-          onChange={e => onUpdate({ ...component, zoneId: e.target.value })}
-          aria-label="Zone"
+          style={{ ...inputStyle(t), cursor: 'pointer' }}
+          value={component.icon ?? ''}
+          onChange={e => {
+            const val = e.target.value
+            if (val === '') {
+              const { icon: _drop, ...rest } = component
+              onUpdate(rest)
+            } else {
+              onUpdate({ ...component, icon: val })
+            }
+          }}
+          aria-label="Icon"
         >
+          <option value="">(none)</option>
+          {ICONS_BY_TYPE[component.type].map(icon => (
+            <option key={icon} value={icon}>{icon}</option>
+          ))}
+        </select>
+      </label>
+      <label style={labelStyle(t)}>
+        Zone
+        <select style={{ ...inputStyle(t), cursor: 'pointer' }} value={component.zoneId} onChange={e => onUpdate({ ...component, zoneId: e.target.value })} aria-label="Zone">
           {zones.map(z => (
             <option key={z.id} value={z.id}>{z.name}</option>
           ))}
@@ -141,31 +183,26 @@ function FlowFields({ flow, graph, onUpdate }: {
   graph: Graph
   onUpdate: (f: typeof flow) => void
 }) {
-  const originator = graph.components.find(c => c.id === flow.originatorId)
-  const target = graph.components.find(c => c.id === flow.targetId)
+  const t = useTheme()
 
   return (
     <div style={fieldsStyle}>
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Name
-        <input
-          style={inputStyle}
-          value={flow.name}
-          onChange={e => onUpdate({ ...flow, name: e.target.value })}
-        />
+        <input style={inputStyle(t)} value={flow.name} onChange={e => onUpdate({ ...flow, name: e.target.value })} />
       </label>
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Protocol
         <input
           id="flow-protocol"
           aria-label="Protocol"
-          style={inputStyle}
+          style={inputStyle(t)}
           value={flow.protocol ?? ''}
           placeholder="e.g. HTTP, gRPC, SQL"
           onChange={e => onUpdate({ ...flow, protocol: e.target.value || undefined })}
         />
       </label>
-      <label style={{ ...labelStyle, flexDirection: 'row', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+      <label style={{ ...labelStyle(t), flexDirection: 'row', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
         <input
           type="checkbox"
           aria-label="Encrypted"
@@ -175,84 +212,58 @@ function FlowFields({ flow, graph, onUpdate }: {
         Encrypted
       </label>
       {flow.encrypted === true && (
-        <label style={labelStyle}>
+        <label style={labelStyle(t)}>
           Encryption Method
           <input
             aria-label="Encryption Method"
-            style={inputStyle}
+            style={inputStyle(t)}
             value={flow.encryption ?? ''}
             placeholder="e.g. TLS, mTLS"
             onChange={e => onUpdate({ ...flow, encryption: e.target.value || undefined })}
           />
         </label>
       )}
-      <label style={labelStyle}>
+      <label style={labelStyle(t)}>
         Direction
-        <select
-          style={selectStyle}
-          value={flow.direction}
-          onChange={e => onUpdate({ ...flow, direction: e.target.value as FlowDirection })}
-          aria-label="Direction"
-        >
+        <select style={{ ...inputStyle(t), cursor: 'pointer' }} value={flow.direction} onChange={e => onUpdate({ ...flow, direction: e.target.value as FlowDirection })} aria-label="Direction">
           <option value={FlowDirection.Unidirectional}>Unidirectional</option>
           <option value={FlowDirection.Bidirectional}>Bidirectional</option>
         </select>
       </label>
-      <div style={infoRowStyle}>
-        <span style={infoLabelStyle}>From</span>
-        <span style={infoValueStyle}>{originator?.name ?? flow.originatorId}</span>
-      </div>
-      <div style={infoRowStyle}>
-        <span style={infoLabelStyle}>To</span>
-        <span style={infoValueStyle}>{target?.name ?? flow.targetId}</span>
-      </div>
+      <label style={labelStyle(t)}>
+        Source
+        <select
+          style={{ ...inputStyle(t), cursor: 'pointer' }}
+          value={flow.originatorId}
+          onChange={e => onUpdate({ ...flow, originatorId: e.target.value })}
+          aria-label="Source"
+        >
+          {graph.components.map(c => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </label>
+      <label style={labelStyle(t)}>
+        Target
+        <select
+          style={{ ...inputStyle(t), cursor: 'pointer' }}
+          value={flow.targetId}
+          onChange={e => onUpdate({ ...flow, targetId: e.target.value })}
+          aria-label="Target"
+        >
+          {graph.components.map(c => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </label>
     </div>
   )
 }
 
-const panelStyle: React.CSSProperties = {
-  width: '320px', minWidth: '320px', height: '100%', background: '#16162a',
-  borderLeft: '1px solid #3a3a6e', display: 'flex', flexDirection: 'column', overflow: 'hidden'
-}
-
-const headerStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  padding: '12px 16px', borderBottom: '1px solid #3a3a6e', flexShrink: 0
-}
-
-const titleStyle: React.CSSProperties = {
-  fontSize: '13px', fontWeight: 600, color: '#a0a0d0', textTransform: 'uppercase', letterSpacing: '0.05em'
-}
-
-const closeBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: '#6060a0', cursor: 'pointer', fontSize: '16px', padding: '0 4px'
-}
-
 const fieldsStyle: React.CSSProperties = {
-  padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto'
+  padding: 16, display: 'flex', flexDirection: 'column', gap: 14, overflowY: 'auto'
 }
 
-const labelStyle: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', color: '#a0a0c0'
-}
-
-const inputStyle: React.CSSProperties = {
-  padding: '6px 8px', background: '#2a2a4e', color: '#e0e0ff',
-  border: '1px solid #4a4a7e', borderRadius: '4px', fontSize: '13px', fontFamily: 'inherit'
-}
-
-const selectStyle: React.CSSProperties = {
-  ...inputStyle, cursor: 'pointer'
-}
-
-const infoRowStyle: React.CSSProperties = {
-  display: 'flex', gap: '8px', alignItems: 'center', fontSize: '12px'
-}
-
-const infoLabelStyle: React.CSSProperties = {
-  color: '#a0a0c0', width: '36px', flexShrink: 0
-}
-
-const infoValueStyle: React.CSSProperties = {
-  color: '#e0e0ff', background: '#2a2a4e', padding: '4px 8px', borderRadius: '4px', flex: 1
-}
+const labelStyle = (t: { textMuted: string }): React.CSSProperties => ({
+  display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: t.textMuted
+})

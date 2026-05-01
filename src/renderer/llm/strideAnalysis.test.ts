@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildStridePrompt, parseThreatsResponse, generateThreats, generateThreatsStreaming } from './strideAnalysis'
 import { StrideCategory } from '../model/threats'
+import type { Threat } from '../model/threats'
 import { ComponentType, FlowDirection } from '../model/graph'
 import type { Graph } from '../model/graph'
 import type { LLMClient, LLMMessage } from './llm'
@@ -9,7 +10,7 @@ const sampleGraph: Graph = {
   id: 'g1',
   name: 'My System',
   zones: [{ id: 'z1', name: 'Internal' }],
-  components: [{ id: 'c1', name: 'API', type: ComponentType.Service, zoneId: 'z1' }],
+  components: [{ id: 'c1', name: 'API', type: ComponentType.Process, zoneId: 'z1' }],
   flows: [{ id: 'f1', name: 'Call', originatorId: 'c1', targetId: 'c1', direction: FlowDirection.Unidirectional }]
 }
 
@@ -46,7 +47,7 @@ describe('buildStridePrompt', () => {
 
   it('includes component type in the prompt', () => {
     const prompt = buildStridePrompt(sampleGraph)
-    expect(prompt).toContain('service')
+    expect(prompt).toContain('process')
   })
 
   it('includes flow names in the prompt', () => {
@@ -112,6 +113,43 @@ describe('buildStridePrompt — with interview transcript', () => {
   it('does not include the bootstrap message content in the prompt', () => {
     const prompt = buildStridePrompt(sampleGraph, transcript)
     expect(prompt).not.toContain('bootstrap')
+  })
+})
+
+describe('buildStridePrompt — with existing threats', () => {
+  const existingThreats: Threat[] = [
+    { id: 't1', title: 'Spoofing API', category: StrideCategory.Spoofing, description: 'Attacker spoofs identity', affectedId: 'c1', severity: 'high' },
+  ]
+
+  it('includes existing threat titles in the prompt', () => {
+    const prompt = buildStridePrompt(sampleGraph, undefined, existingThreats)
+    expect(prompt).toContain('Spoofing API')
+  })
+
+  it('labels the section as already identified threats', () => {
+    const prompt = buildStridePrompt(sampleGraph, undefined, existingThreats)
+    expect(prompt.toLowerCase()).toContain('already been identified')
+  })
+
+  it('instructs the LLM not to duplicate existing threats', () => {
+    const prompt = buildStridePrompt(sampleGraph, undefined, existingThreats)
+    expect(prompt.toLowerCase()).toContain('do not repeat')
+  })
+
+  it('does not include existing threats section when the list is empty', () => {
+    const prompt = buildStridePrompt(sampleGraph, undefined, [])
+    expect(prompt.toLowerCase()).not.toContain('already been identified')
+  })
+
+  it('does not include existing threats section when undefined', () => {
+    const prompt = buildStridePrompt(sampleGraph)
+    expect(prompt.toLowerCase()).not.toContain('already been identified')
+  })
+
+  it('includes existing threat category and affected component', () => {
+    const prompt = buildStridePrompt(sampleGraph, undefined, existingThreats)
+    expect(prompt).toContain('Spoofing')
+    expect(prompt).toContain('c1')
   })
 })
 
@@ -238,6 +276,20 @@ describe('generateThreatsStreaming', () => {
     const [messages] = vi.mocked(client.stream!).mock.calls[0]!
     expect(messages[0]!.content).toContain('What auth?')
   })
+
+  it('includes existing threats context in the prompt when provided', async () => {
+    const existing: Threat[] = [
+      { id: 't1', title: 'Spoofing API', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'high' },
+    ]
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockResolvedValue('')
+    }
+    await generateThreatsStreaming(client, sampleGraph, () => {}, undefined, existing)
+    const [messages] = vi.mocked(client.stream!).mock.calls[0]!
+    expect(messages[0]!.content).toContain('Spoofing API')
+    expect(messages[0]!.content.toLowerCase()).toContain('already been identified')
+  })
 })
 
 describe('generateThreats', () => {
@@ -270,5 +322,16 @@ describe('generateThreats', () => {
   it('propagates errors thrown by client.complete', async () => {
     const client: LLMClient = { complete: vi.fn().mockRejectedValue(new Error('API error')) }
     await expect(generateThreats(client, sampleGraph)).rejects.toThrow('API error')
+  })
+
+  it('includes existing threats context in the prompt when provided', async () => {
+    const existing: Threat[] = [
+      { id: 't1', title: 'Spoofing API', category: StrideCategory.Spoofing, description: 'x', affectedId: 'c1', severity: 'high' },
+    ]
+    const client = makeClient(jsonLines)
+    await generateThreats(client, sampleGraph, undefined, existing)
+    const [messages] = vi.mocked(client.complete).mock.calls[0]!
+    expect(messages[0]!.content).toContain('Spoofing API')
+    expect(messages[0]!.content.toLowerCase()).toContain('already been identified')
   })
 })

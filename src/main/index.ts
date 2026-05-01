@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, safeStorage, shell } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 
@@ -6,10 +6,10 @@ function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    frame: false,
+    titleBarStyle: 'hidden',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      webSecurity: false
+      preload: join(__dirname, '../preload/index.js')
     }
   })
 
@@ -20,15 +20,19 @@ function createWindow(): void {
   }
 }
 
-ipcMain.handle('save-graph', async (_event, payload: string) => {
-  const { filePath } = await dialog.showSaveDialog({
+ipcMain.handle('save-graph', async (_event, payload: string, filePath?: string) => {
+  if (typeof filePath === 'string' && filePath.length > 0) {
+    writeFileSync(filePath, payload, 'utf-8')
+    return { cancelled: false, filePath }
+  }
+  const result = await dialog.showSaveDialog({
     title: 'Save Diagram',
     defaultPath: 'diagram.tninja',
     filters: [{ name: 'ThreatNinja Diagram', extensions: ['tninja'] }]
   })
-  if (filePath === undefined) return { cancelled: true }
-  writeFileSync(filePath, payload, 'utf-8')
-  return { cancelled: false, filePath }
+  if (result.filePath === undefined) return { cancelled: true }
+  writeFileSync(result.filePath, payload, 'utf-8')
+  return { cancelled: false, filePath: result.filePath }
 })
 
 ipcMain.handle('load-graph', async () => {
@@ -39,13 +43,36 @@ ipcMain.handle('load-graph', async () => {
   })
   if (canceled || filePaths.length === 0) return { cancelled: true }
   const content = readFileSync(filePaths[0]!, 'utf-8')
-  return { cancelled: false, content }
+  return { cancelled: false, content, filePath: filePaths[0] }
 })
 
 ipcMain.handle('llm-complete', async (_event, { url, headers, body }: { url: string; headers: Record<string, string>; body: string }) => {
   const response = await fetch(url, { method: 'POST', headers, body })
   const data = await response.json()
   return { ok: response.ok, status: response.status, data }
+})
+
+ipcMain.handle('llm-stream', async (event, { url, headers, body }: { url: string; headers: Record<string, string>; body: string }) => {
+  const response = await fetch(url, { method: 'POST', headers, body })
+  if (!response.ok) return { ok: false, status: response.status }
+  if (response.body === null) return { ok: true, status: response.status }
+
+  const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader()
+  const decoder = new TextDecoder()
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('llm-stream-chunk', decoder.decode(value, { stream: true }))
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  return { ok: true, status: response.status }
 })
 
 ipcMain.handle('save-settings', async (_event, json: string) => {
@@ -72,6 +99,21 @@ ipcMain.handle('load-settings', async () => {
     return null
   }
 })
+
+ipcMain.handle('open-external', async (_event, url: string) => {
+  if (typeof url !== 'string') return { ok: false, error: 'invalid url' }
+  if (!url.startsWith('https://attack.mitre.org/')) return { ok: false, error: 'url not allowlisted' }
+  await shell.openExternal(url)
+  return { ok: true }
+})
+
+ipcMain.on('window-minimize', () => { BrowserWindow.getFocusedWindow()?.minimize() })
+ipcMain.on('window-maximize', () => {
+  const win = BrowserWindow.getFocusedWindow()
+  if (win === null) return
+  win.isMaximized() ? win.unmaximize() : win.maximize()
+})
+ipcMain.on('window-close', () => { BrowserWindow.getFocusedWindow()?.close() })
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)

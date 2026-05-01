@@ -346,7 +346,7 @@ describe('createLLMClient — stream method', () => {
     expect(result).toBe('Hello World')
   })
 
-  it('uses fetch directly even when electronAPI is present', async () => {
+  it('falls back to fetch for streaming when electronAPI has no llmStream', async () => {
     const llmComplete = vi.fn()
     vi.stubGlobal('window', { electronAPI: { llmComplete } })
     const lines = ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}']
@@ -463,5 +463,65 @@ describe('createLLMClient — Electron IPC path', () => {
 
     expect(llmComplete).toHaveBeenCalled()
     expect(fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('createLLMClient — IPC streaming', () => {
+  const llmComplete = vi.fn()
+  const llmStream = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('fetch', vi.fn())
+    vi.stubGlobal('window', { electronAPI: { llmComplete, llmStream } })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('uses llmStream instead of fetch for streaming when available', async () => {
+    llmStream.mockImplementation(async (_params: unknown, onChunk: (c: string) => void) => {
+      onChunk('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ipc-hi"}}\n')
+      return { ok: true, status: 200 }
+    })
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
+    const chunks: string[] = []
+    await client.stream!([], '', chunk => chunks.push(chunk))
+    expect(llmStream).toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+    expect(chunks).toEqual(['ipc-hi'])
+  })
+
+  it('accumulates text across multiple IPC chunks', async () => {
+    llmStream.mockImplementation(async (_params: unknown, onChunk: (c: string) => void) => {
+      onChunk('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}\n')
+      onChunk('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" World"}}\n')
+      return { ok: true, status: 200 }
+    })
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
+    const chunks: string[] = []
+    const result = await client.stream!([], '', chunk => chunks.push(chunk))
+    expect(result).toBe('Hello World')
+    expect(chunks).toEqual(['Hello', ' World'])
+  })
+
+  it('throws when IPC stream returns non-ok', async () => {
+    llmStream.mockResolvedValue({ ok: false, status: 401 })
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'bad' })
+    await expect(client.stream!([], '', () => {})).rejects.toThrow('401')
+  })
+
+  it('works with OpenAI SSE format over IPC', async () => {
+    llmStream.mockImplementation(async (_params: unknown, onChunk: (c: string) => void) => {
+      onChunk('data: {"choices":[{"delta":{"content":"hello"}}]}\n')
+      onChunk('data: [DONE]\n')
+      return { ok: true, status: 200 }
+    })
+    const client = createLLMClient({ provider: LLMProvider.OpenAI, apiKey: 'sk' })
+    const chunks: string[] = []
+    const result = await client.stream!([], '', chunk => chunks.push(chunk))
+    expect(result).toBe('hello')
+    expect(chunks).toEqual(['hello'])
   })
 })
