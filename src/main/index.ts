@@ -8,6 +8,7 @@ function createWindow(): void {
     height: 800,
     frame: false,
     titleBarStyle: 'hidden',
+    icon: join(__dirname, '../../build/icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js')
     }

@@ -55,7 +55,7 @@ npm install
 npm run dev
 ~~~
 
-Node 20+ required.
+Node 24+ required.
 
 ## Files
 
