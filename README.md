@@ -4,8 +4,6 @@ A local-first threat modeling tool that actually does the boring parts for you.
 
 Draw your system. Plug in an LLM. Get STRIDE + MITRE ATT&CK — mapped, enriched, and clickable.
 
----
-
 ## Why this exists
 
 Threat modeling always gets stuck in two places:
@@ -18,10 +16,6 @@ ThreatNinja cuts both.
 - Describe your system → it draws the diagram
 - Draw it yourself → also works
 - Run analysis → STRIDE first, ATT&CK on top
-
-
-
----
 
 ## What it does
 
@@ -47,16 +41,12 @@ ThreatNinja cuts both.
 - Interview mode to fill gaps around auth, data sensitivity, and boundaries
 - Configurable prompts, so you can tune it to your org
 
----
-
 ## Local-first
 
 - Runs entirely on your machine
 - Works with OpenAI, Anthropic, or local models like Ollama, LM Studio, llama.cpp, and LiteLLM
 - API keys are encrypted with Electron `safeStorage`
 - Nothing leaves your machine unless you choose it to
-
----
 
 ## Run it
 
@@ -66,8 +56,6 @@ npm run dev
 ~~~
 
 Node 20+ required.
-
----
 
 ## Files
 
@@ -79,6 +67,4 @@ Node 20+ required.
 - interview transcript, if used
 
 Export to PNG, SVG, JSON, or CSV.
-
----
 
