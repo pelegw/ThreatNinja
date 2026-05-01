@@ -29,6 +29,9 @@
       "target": ["nsis", "portable"],
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
+    "nsis": {
+      "differentialPackage": false
+    },
     "mac": {
       "target": [
         { "target": "dmg", "arch": ["x64", "arm64"] },
@@ -37,6 +40,9 @@
       "category": "public.app-category.developer-tools",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "identity": null
+    },
+    "dmg": {
+      "writeUpdateInfo": false
     },
     "linux": {
       "target": ["AppImage"],
