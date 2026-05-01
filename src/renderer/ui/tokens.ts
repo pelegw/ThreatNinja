@@ -94,8 +94,8 @@ export const darkTheme: Theme = {
 }
 
 export const fonts = {
-  sans: '"Inter", ui-sans-serif, -apple-system, system-ui, sans-serif',
-  mono: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
+  sans: '"Inter Variable", "Inter", ui-sans-serif, -apple-system, system-ui, sans-serif',
+  mono: '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
 }
 
 export const ThemeContext = createContext<Theme>(lightTheme)
