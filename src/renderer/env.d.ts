@@ -16,6 +16,7 @@ interface ElectronAPI {
     onChunk: (chunk: string) => void
   ) => Promise<LLMStreamResult>
   openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
+  showMessageBox: (opts: { message: string; detail?: string; buttons: string[]; defaultId?: number }) => Promise<number>
 }
 
 interface Window {

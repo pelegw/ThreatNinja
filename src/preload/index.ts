@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowClose: () => ipcRenderer.send('window-close'),
   openExternal: (url: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('open-external', url),
+  showMessageBox: (opts: { message: string; detail?: string; buttons: string[]; defaultId?: number }): Promise<number> =>
+    ipcRenderer.invoke('show-message-box', opts),
   llmStream: (
     params: { url: string; headers: Record<string, string>; body: string },
     onChunk: (chunk: string) => void

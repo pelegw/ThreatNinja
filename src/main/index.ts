@@ -101,6 +101,11 @@ ipcMain.handle('load-settings', async () => {
   }
 })
 
+ipcMain.handle('show-message-box', async (_event, opts: { message: string; detail?: string; buttons: string[]; defaultId?: number }) => {
+  const result = await dialog.showMessageBox({ type: 'question', ...opts })
+  return result.response
+})
+
 ipcMain.handle('open-external', async (_event, url: string) => {
   if (typeof url !== 'string') return { ok: false, error: 'invalid url' }
   if (!url.startsWith('https://attack.mitre.org/')) return { ok: false, error: 'url not allowlisted' }

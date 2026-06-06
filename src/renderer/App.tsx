@@ -21,6 +21,7 @@ import { generateThreatsStreaming } from './llm/strideAnalysis'
 import InterviewPanel from './ui/InterviewPanel'
 import { exportToPng, exportToSvg, exportToJson, exportThreatsToCsv } from './canvas/export'
 import { useAppHistory } from './hooks/useAppHistory'
+import { useNewDocument } from './hooks/useNewDocument'
 import { nextId } from './model/ids'
 import { useInterview } from './hooks/useInterview'
 import { useLLMSettings } from './hooks/useLLMSettings'
@@ -86,6 +87,7 @@ export default function App(): JSX.Element {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
   const currentFilePathRef = useRef(currentFilePath)
   currentFilePathRef.current = currentFilePath
+  const skipNextDirtyRef = useRef(false)
 
   const handleError = useCallback((msg: string) => { setError(msg) }, [])
   const interview = useInterview({ settings, graphRef, onError: handleError })
@@ -136,6 +138,24 @@ export default function App(): JSX.Element {
       alert('Failed to load diagram: file is corrupt or incompatible.')
     }
   }, [setGraphWithHistory, interview])
+
+  const resetDocument = useCallback(() => {
+    skipNextDirtyRef.current = true
+    setGraphWithHistory(defaultGraph)
+    setThreatsNoHistory(null)
+    setAttackThreatsNoHistory(null)
+    interview.setMessages([])
+    setCurrentFilePath(null)
+    setIsDirty(false)
+    setLastSavedAt(null)
+  }, [setGraphWithHistory, setThreatsNoHistory, setAttackThreatsNoHistory, interview])
+
+  const { handleNew } = useNewDocument({
+    isDirty,
+    onSave: handleSave,
+    onReset: resetDocument,
+    showMessageBox: (opts) => window.electronAPI.showMessageBox(opts),
+  })
 
   const handleGenerateDiagram = useCallback(async (description: string) => {
     setIsGenerating(true)
@@ -408,6 +428,7 @@ export default function App(): JSX.Element {
       if (mod) {
         if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
         if (e.key === 'y') { e.preventDefault(); redo() }
+        if (e.key === 'n') { e.preventDefault(); void handleNew() }
         if (e.key === 's' && !e.shiftKey) { e.preventDefault(); handleSave() }
         if (e.key === 's' && e.shiftKey) { e.preventDefault(); handleSaveAs() }
         return
@@ -424,11 +445,12 @@ export default function App(): JSX.Element {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [undo, redo, handleSave, handleSaveAs, selectedElementId, handleDeleteElement])
+  }, [undo, redo, handleNew, handleSave, handleSaveAs, selectedElementId, handleDeleteElement])
 
   const isInitialRender = useRef(true)
   useEffect(() => {
     if (isInitialRender.current) { isInitialRender.current = false; return }
+    if (skipNextDirtyRef.current) { skipNextDirtyRef.current = false; return }
     setIsDirty(true)
   }, [graph, threats])
 
@@ -636,9 +658,10 @@ export default function App(): JSX.Element {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <ToolbarDropdown label="File" items={[
+              { label: 'New', onClick: handleNew, shortcut: 'Ctrl+N' },
+              { label: 'Open', onClick: handleLoad, shortcut: 'Ctrl+O' },
               { label: 'Save', onClick: handleSave, shortcut: 'Ctrl+S' },
               { label: 'Save As…', onClick: handleSaveAs, shortcut: 'Ctrl+Shift+S' },
-              { label: 'Open', onClick: handleLoad, shortcut: 'Ctrl+O' },
             ]} />
             <ToolbarDropdown label="Edit" items={[
               { label: 'Undo', onClick: undo, disabled: !canUndo, shortcut: 'Ctrl+Z' },
