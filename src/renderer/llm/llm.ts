@@ -13,6 +13,8 @@ export const LLMSettingsSchema = z.object({
   apiKey: z.string().optional(),
   endpoint: z.string().optional(),
   model: z.string().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  thinkingBudgetTokens: z.number().int().positive().optional(),
   nlToGraphPrompt: z.string().optional(),
   interviewPrompt: z.string().optional(),
   stridePrompt: z.string().optional(),
@@ -33,23 +35,32 @@ export type LLMClient = {
   stream?: (messages: LLMMessage[], system: string, onChunk: (chunk: string) => void) => Promise<string>
 }
 
-type RequestInput = { messages: LLMMessage[]; system: string; model?: string }
+type RequestInput = { messages: LLMMessage[]; system: string; model?: string; maxTokens?: number; thinkingBudgetTokens?: number }
 
 const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-6'
 const OPENAI_DEFAULT_MODEL = 'gpt-4o'
 const DEFAULT_MAX_TOKENS = 4096
+const THINKING_MAX_TOKENS = 16000
+const MIN_OUTPUT_TOKENS = 1000
 
-export const formatAnthropicRequest = ({ messages, system, model }: RequestInput) => ({
-  model: model ?? ANTHROPIC_DEFAULT_MODEL,
-  system,
-  messages,
-  max_tokens: DEFAULT_MAX_TOKENS
-})
+export const formatAnthropicRequest = ({ messages, system, model, maxTokens, thinkingBudgetTokens }: RequestInput) => {
+  const effectiveMaxTokens = thinkingBudgetTokens !== undefined
+    ? Math.max(maxTokens ?? THINKING_MAX_TOKENS, thinkingBudgetTokens + MIN_OUTPUT_TOKENS)
+    : (maxTokens ?? DEFAULT_MAX_TOKENS)
 
-export const formatOpenAIRequest = ({ messages, system, model }: RequestInput) => ({
-  model: model ?? OPENAI_DEFAULT_MODEL,
+  return {
+    model: model ?? ANTHROPIC_DEFAULT_MODEL,
+    system,
+    messages,
+    max_tokens: effectiveMaxTokens,
+    ...(thinkingBudgetTokens !== undefined ? { thinking: { type: 'enabled', budget_tokens: thinkingBudgetTokens } } : {}),
+  }
+}
+
+export const formatOpenAIRequest = ({ messages, system, model, maxTokens }: RequestInput) => ({
+  ...(model !== undefined ? { model } : {}),
   messages: [{ role: 'system', content: system }, ...messages],
-  max_tokens: DEFAULT_MAX_TOKENS
+  max_tokens: maxTokens ?? DEFAULT_MAX_TOKENS
 })
 
 const getElectronLLMComplete = (): ((params: { url: string; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number; data: unknown }>) | undefined => {
@@ -152,33 +163,38 @@ const readSSEStream = async (
   return state.accumulated
 }
 
-const anthropicClient = (apiKey: string, model?: string): LLMClient => ({
+const extractAnthropicResponseText = (content: { type?: string; text?: string }[]): string => {
+  const textBlock = content.find(b => b.type === 'text')
+  return textBlock?.text ?? content[0]?.text ?? ''
+}
+
+const anthropicClient = (apiKey: string, model?: string, maxTokens?: number, thinkingBudgetTokens?: number): LLMClient => ({
   complete: async (messages, system) => {
     const response = await httpPost(
       'https://api.anthropic.com/v1/messages',
       { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      JSON.stringify(formatAnthropicRequest({ messages, system, ...(model !== undefined ? { model } : {}) }))
+      JSON.stringify(formatAnthropicRequest({ messages, system, model, maxTokens, thinkingBudgetTokens }))
     )
     if (!response.ok) throw new Error(`Anthropic API error: ${response.status}`)
-    const data = await response.json() as { content: { text: string }[] }
-    return data.content[0]?.text ?? ''
+    const data = await response.json() as { content: { type?: string; text?: string }[] }
+    return extractAnthropicResponseText(data.content)
   },
   stream: (messages, system, onChunk) =>
     readSSEStream(
       'https://api.anthropic.com/v1/messages',
       { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      JSON.stringify({ ...formatAnthropicRequest({ messages, system, ...(model !== undefined ? { model } : {}) }), stream: true }),
+      JSON.stringify({ ...formatAnthropicRequest({ messages, system, model, maxTokens, thinkingBudgetTokens }), stream: true }),
       extractAnthropicText,
       onChunk
     )
 })
 
-const openAICompatibleClient = (apiKey: string | undefined, endpoint: string, model?: string): LLMClient => ({
+const openAICompatibleClient = (apiKey: string | undefined, endpoint: string, model?: string, maxTokens?: number): LLMClient => ({
   complete: async (messages, system) => {
     const response = await httpPost(
       `${endpoint}/chat/completions`,
       { 'Content-Type': 'application/json', ...(apiKey !== undefined ? { Authorization: `Bearer ${apiKey}` } : {}) },
-      JSON.stringify(formatOpenAIRequest({ messages, system, ...(model !== undefined ? { model } : {}) }))
+      JSON.stringify(formatOpenAIRequest({ messages, system, model, maxTokens }))
     )
     if (!response.ok) throw new Error(`LLM API error: ${response.status}`)
     const data = await response.json() as { choices: { message: { content: string } }[] }
@@ -188,7 +204,7 @@ const openAICompatibleClient = (apiKey: string | undefined, endpoint: string, mo
     readSSEStream(
       `${endpoint}/chat/completions`,
       { 'Content-Type': 'application/json', ...(apiKey !== undefined ? { Authorization: `Bearer ${apiKey}` } : {}) },
-      JSON.stringify({ ...formatOpenAIRequest({ messages, system, ...(model !== undefined ? { model } : {}) }), stream: true }),
+      JSON.stringify({ ...formatOpenAIRequest({ messages, system, model, maxTokens }), stream: true }),
       extractOpenAIText,
       onChunk
     )
@@ -196,10 +212,10 @@ const openAICompatibleClient = (apiKey: string | undefined, endpoint: string, mo
 
 export const createLLMClient = (settings: LLMSettings): LLMClient => {
   if (settings.provider === LLMProvider.Anthropic) {
-    return anthropicClient(settings.apiKey ?? '', settings.model)
+    return anthropicClient(settings.apiKey ?? '', settings.model, settings.maxTokens, settings.thinkingBudgetTokens)
   }
   if (settings.provider === LLMProvider.OpenAI) {
-    return openAICompatibleClient(settings.apiKey, 'https://api.openai.com/v1', settings.model)
+    return openAICompatibleClient(settings.apiKey, 'https://api.openai.com/v1', settings.model ?? OPENAI_DEFAULT_MODEL, settings.maxTokens)
   }
-  return openAICompatibleClient(settings.apiKey, settings.endpoint ?? 'http://localhost:11434/v1', settings.model)
+  return openAICompatibleClient(settings.apiKey, settings.endpoint ?? 'http://localhost:11434/v1', settings.model, settings.maxTokens)
 }

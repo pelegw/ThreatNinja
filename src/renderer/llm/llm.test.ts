@@ -29,6 +29,16 @@ describe('LLMSettingsSchema', () => {
     const s = { provider: LLMProvider.Anthropic, apiKey: 'k', extra: true }
     expect(LLMSettingsSchema.parse(s)).not.toHaveProperty('extra')
   })
+
+  it('accepts maxTokens as a positive integer', () => {
+    const s = { provider: LLMProvider.Anthropic, apiKey: 'k', maxTokens: 8192 }
+    expect(LLMSettingsSchema.parse(s)).toMatchObject({ maxTokens: 8192 })
+  })
+
+  it('accepts thinkingBudgetTokens as a positive integer', () => {
+    const s = { provider: LLMProvider.Anthropic, apiKey: 'k', thinkingBudgetTokens: 10000 }
+    expect(LLMSettingsSchema.parse(s)).toMatchObject({ thinkingBudgetTokens: 10000 })
+  })
 })
 
 describe('formatAnthropicRequest', () => {
@@ -49,6 +59,31 @@ describe('formatAnthropicRequest', () => {
     expect(typeof req.model).toBe('string')
     expect(req.model.length).toBeGreaterThan(0)
   })
+
+  it('uses maxTokens when provided', () => {
+    const req = formatAnthropicRequest({ messages: [], system: '', maxTokens: 8192 })
+    expect(req.max_tokens).toBe(8192)
+  })
+
+  it('includes thinking field when thinkingBudgetTokens is set', () => {
+    const req = formatAnthropicRequest({ messages: [], system: '', thinkingBudgetTokens: 10000 })
+    expect(req).toHaveProperty('thinking', { type: 'enabled', budget_tokens: 10000 })
+  })
+
+  it('does not include thinking field when thinkingBudgetTokens is not set', () => {
+    const req = formatAnthropicRequest({ messages: [], system: '' })
+    expect(req).not.toHaveProperty('thinking')
+  })
+
+  it('sets max_tokens high enough to fit thinking budget plus output when thinking is enabled', () => {
+    const req = formatAnthropicRequest({ messages: [], system: '', thinkingBudgetTokens: 10000 })
+    expect(req.max_tokens).toBeGreaterThan(10000)
+  })
+
+  it('respects an explicit maxTokens even when thinking is enabled, if it already exceeds the minimum', () => {
+    const req = formatAnthropicRequest({ messages: [], system: '', thinkingBudgetTokens: 5000, maxTokens: 20000 })
+    expect(req.max_tokens).toBe(20000)
+  })
 })
 
 describe('formatOpenAIRequest', () => {
@@ -63,14 +98,24 @@ describe('formatOpenAIRequest', () => {
     expect(req.messages[1]).toEqual({ role: 'user', content: 'hello' })
   })
 
-  it('uses a non-empty default model when none provided', () => {
-    const req = formatOpenAIRequest({ messages: [], system: '' })
-    expect(req.model.length).toBeGreaterThan(0)
+  it('uses the provided model when given', () => {
+    const req = formatOpenAIRequest({ messages: [], system: '', model: 'gpt-4o' })
+    expect(req.model).toBe('gpt-4o')
   })
 
   it('includes max_tokens so local models produce complete responses', () => {
     const req = formatOpenAIRequest({ messages: [], system: '' })
     expect(req.max_tokens).toBeGreaterThan(0)
+  })
+
+  it('uses maxTokens when provided', () => {
+    const req = formatOpenAIRequest({ messages: [], system: '', maxTokens: 8192 })
+    expect(req.max_tokens).toBe(8192)
+  })
+
+  it('omits model field when model is not provided', () => {
+    const req = formatOpenAIRequest({ messages: [], system: '' })
+    expect(req).not.toHaveProperty('model')
   })
 })
 
@@ -201,6 +246,35 @@ describe('createLLMClient', () => {
     vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ content: [{ text: 'hello world' }] }) } as Response)
     const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
     expect(await client.complete([], '')).toBe('hello world')
+  })
+
+  it('extracts text from a thinking response where the text block is not first', async () => {
+    const content = [
+      { type: 'thinking', thinking: 'internal reasoning...' },
+      { type: 'text', text: 'final answer' },
+    ]
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ content }) } as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk' })
+    expect(await client.complete([], '')).toBe('final answer')
+  })
+
+  it('sends thinkingBudgetTokens as thinking block in request body', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ content: [{ type: 'text', text: '' }] }) } as Response)
+    const client = createLLMClient({ provider: LLMProvider.Anthropic, apiKey: 'sk', thinkingBudgetTokens: 8000 })
+    await client.complete([], '')
+    const [, init] = vi.mocked(fetch).mock.calls[0]!
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 8000 })
+    expect(body.max_tokens).toBeGreaterThan(8000)
+  })
+
+  it('does not include model field in request body for Local provider when model is not set', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: '' } }] }) } as Response)
+    const client = createLLMClient({ provider: LLMProvider.Local, endpoint: 'http://localhost:8000/v1' })
+    await client.complete([], '')
+    const [, init] = vi.mocked(fetch).mock.calls[0]!
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body).not.toHaveProperty('model')
   })
 
   it('returns the content from the first OpenAI choice', async () => {
