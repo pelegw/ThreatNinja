@@ -106,6 +106,16 @@ describe('parseAttackThreatsResponse', () => {
     const parsed = parseAttackThreatsResponse(noId)
     expect(parsed[0]!.id.length).toBeGreaterThan(0)
   })
+
+  it('parses a compact JSON array response', () => {
+    const arr = JSON.parse(validAttackJsonl.split('\n').map(l => l).join(',').replace(/^/, '[').replace(/$/, ']'))
+    expect(parseAttackThreatsResponse(JSON.stringify(arr))).toHaveLength(2)
+  })
+
+  it('parses pretty-printed multi-line JSON objects separated by blank lines', () => {
+    const objects = validAttackJsonl.split('\n').map(l => JSON.stringify(JSON.parse(l), null, 2))
+    expect(parseAttackThreatsResponse(objects.join('\n\n'))).toHaveLength(2)
+  })
 })
 
 describe('generateAttackThreats', () => {
@@ -152,5 +162,16 @@ describe('generateAttackThreatsStreaming', () => {
     const result = await generateAttackThreatsStreaming(client, sampleGraph, strideThreats, onAttack)
     expect(result).toHaveLength(2)
     expect(onAttack).toHaveBeenCalledTimes(2)
+  })
+
+  it('handles pretty-printed multi-line objects in the stream', async () => {
+    const pretty = validAttackJsonl.split('\n').map(l => JSON.stringify(JSON.parse(l), null, 2)).join('\n\n')
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn(async (_m, _s, onChunk) => { onChunk(pretty); return pretty }),
+    }
+    const received: unknown[] = []
+    await generateAttackThreatsStreaming(client, sampleGraph, strideThreats, a => received.push(a))
+    expect(received).toHaveLength(2)
   })
 })

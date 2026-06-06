@@ -226,6 +226,39 @@ describe('parseThreatsResponse', () => {
     const withBlanks = validThreats.map(t => JSON.stringify(t)).join('\n\n')
     expect(parseThreatsResponse(withBlanks)).toHaveLength(2)
   })
+
+  it('parses a compact JSON array response', () => {
+    const compact = JSON.stringify(validThreats)
+    const threats = parseThreatsResponse(compact)
+    expect(threats).toHaveLength(2)
+  })
+
+  it('parses a pretty-printed JSON array response', () => {
+    const pretty = JSON.stringify(validThreats, null, 2)
+    const threats = parseThreatsResponse(pretty)
+    expect(threats).toHaveLength(2)
+  })
+
+  it('parses a JSON array where each object is on its own line with trailing commas stripped', () => {
+    const lines = validThreats.map((t, i) =>
+      i < validThreats.length - 1 ? JSON.stringify(t) + ',' : JSON.stringify(t)
+    )
+    const response = '[\n' + lines.join('\n') + '\n]'
+    expect(parseThreatsResponse(response)).toHaveLength(2)
+  })
+
+  it('parses pretty-printed multi-line JSON objects separated by blank lines', () => {
+    const pretty = validThreats.map(t => JSON.stringify(t, null, 2)).join('\n\n')
+    expect(parseThreatsResponse(pretty)).toHaveLength(2)
+  })
+
+  it('handles braces inside string values without breaking object detection', () => {
+    const withBraces = JSON.stringify({
+      ...validThreats[0],
+      description: 'attacker uses {inject} payload to exploit {system}',
+    }, null, 2)
+    expect(parseThreatsResponse(withBraces)).toHaveLength(1)
+  })
 })
 
 describe('generateThreatsStreaming', () => {
@@ -244,6 +277,20 @@ describe('generateThreatsStreaming', () => {
     await generateThreatsStreaming(client, sampleGraph, t => received.push(t))
     expect(received).toHaveLength(2)
     expect(client.complete).not.toHaveBeenCalled()
+  })
+
+  it('calls onThreat for pretty-printed multi-line objects in the stream', async () => {
+    const pretty = validThreats.map(t => JSON.stringify(t, null, 2)).join('\n\n')
+    const client: LLMClient = {
+      complete: vi.fn(),
+      stream: vi.fn().mockImplementation(async (_m: unknown, _s: unknown, onChunk: (c: string) => void) => {
+        onChunk(pretty)
+        return pretty
+      })
+    }
+    const received: unknown[] = []
+    await generateThreatsStreaming(client, sampleGraph, t => received.push(t))
+    expect(received).toHaveLength(2)
   })
 
   it('returns the full threat list', async () => {

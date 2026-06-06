@@ -4,6 +4,7 @@ import type { Graph } from '../model/graph'
 import type { LLMClient, LLMMessage } from './llm'
 import { formatTranscriptForStride } from './interview'
 import { nextId } from '../model/ids'
+import { extractJsonObjects } from './parseUtils'
 
 export const DEFAULT_STRIDE_PROMPT = `You are a security expert performing STRIDE threat modeling.
 
@@ -41,7 +42,7 @@ const serializeExistingThreats = (threats: Threat[]): string =>
   threats.map(t => `  - [${t.category}] "${t.title}" (affects: ${t.affectedId}, severity: ${t.severity})`).join('\n')
 
 export const buildStridePrompt = (graph: Graph, interviewTranscript?: LLMMessage[], existingThreats?: Threat[]): string => {
-  let prompt = `${serializeGraphForPrompt(graph)}\n\nPerform STRIDE threat analysis on this system. Return a JSON array of threats.`
+  let prompt = `${serializeGraphForPrompt(graph)}\n\nPerform STRIDE threat analysis on this system. Return one threat per line as a JSON object (JSONL). Do not wrap in an array.`
   if (interviewTranscript !== undefined && interviewTranscript.length > 1) {
     const transcriptText = formatTranscriptForStride(interviewTranscript)
     if (transcriptText.length > 0) {
@@ -62,18 +63,31 @@ const parseSingleThreat = (line: string, existingIds: readonly string[]): Threat
   return ThreatSchema.parse(raw)
 }
 
+
 export const parseThreatsResponse = (response: string): Threat[] => {
+  const trimmed = response.trim()
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed) as unknown[]
+      const usedIds: string[] = []
+      return arr.flatMap(item => {
+        try {
+          const threat = parseSingleThreat(JSON.stringify(item), usedIds)
+          usedIds.push(threat.id)
+          return [threat]
+        } catch { return [] }
+      })
+    } catch { /* fall through */ }
+  }
+  const [objects] = extractJsonObjects(trimmed)
   const usedIds: string[] = []
-  return response.split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0)
-    .flatMap(line => {
-      try {
-        const threat = parseSingleThreat(line, usedIds)
-        usedIds.push(threat.id)
-        return [threat]
-      } catch { return [] }
-    })
+  return objects.flatMap(obj => {
+    try {
+      const threat = parseSingleThreat(obj, usedIds)
+      usedIds.push(threat.id)
+      return [threat]
+    } catch { return [] }
+  })
 }
 
 const resolveStridePrompt = (override?: string): string =>
@@ -112,29 +126,18 @@ export const generateThreatsStreaming = async (
       resolveStridePrompt(systemPrompt),
       (chunk) => {
         buffer += chunk
-        let newlinePos: number
-        while ((newlinePos = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, newlinePos).trim()
-          buffer = buffer.slice(newlinePos + 1)
-          if (line.length === 0) continue
+        const [objects, remaining] = extractJsonObjects(buffer)
+        buffer = remaining
+        for (const obj of objects) {
           try {
-            const threat = parseSingleThreat(line, usedIds)
+            const threat = parseSingleThreat(obj, usedIds)
             usedIds.push(threat.id)
             threats.push(threat)
             onThreat(threat)
-          } catch { /* skip incomplete/invalid lines */ }
+          } catch { /* skip invalid */ }
         }
       }
     )
-    const remaining = buffer.trim()
-    if (remaining.length > 0) {
-      try {
-        const threat = parseSingleThreat(remaining, usedIds)
-        usedIds.push(threat.id)
-        threats.push(threat)
-        onThreat(threat)
-      } catch { /* skip */ }
-    }
     return threats
   }
 

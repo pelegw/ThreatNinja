@@ -6,6 +6,7 @@ import type { LLMClient, LLMMessage } from './llm'
 import { serializeGraphForPrompt } from './strideAnalysis'
 import { formatTranscriptForStride } from './interview'
 import { nextId } from '../model/ids'
+import { extractJsonObjects } from './parseUtils'
 
 export const DEFAULT_MITRE_PROMPT = `You are a security expert performing MITRE ATT&CK threat analysis on a system that has already been STRIDE-analyzed.
 
@@ -70,17 +71,29 @@ const parseSingleAttackThreat = (line: string, existingIds: readonly string[]): 
 }
 
 export const parseAttackThreatsResponse = (response: string): AttackThreat[] => {
+  const trimmed = response.trim()
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed) as unknown[]
+      const usedIds: string[] = []
+      return arr.flatMap(item => {
+        try {
+          const a = parseSingleAttackThreat(JSON.stringify(item), usedIds)
+          usedIds.push(a.id)
+          return [a]
+        } catch { return [] }
+      })
+    } catch { /* fall through */ }
+  }
+  const [objects] = extractJsonObjects(trimmed)
   const usedIds: string[] = []
-  return response.split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0)
-    .flatMap(line => {
-      try {
-        const a = parseSingleAttackThreat(line, usedIds)
-        usedIds.push(a.id)
-        return [a]
-      } catch { return [] }
-    })
+  return objects.flatMap(obj => {
+    try {
+      const a = parseSingleAttackThreat(obj, usedIds)
+      usedIds.push(a.id)
+      return [a]
+    } catch { return [] }
+  })
 }
 
 const resolvePrompt = (override?: string): string =>
@@ -121,29 +134,18 @@ export const generateAttackThreatsStreaming = async (
       resolvePrompt(systemPrompt),
       (chunk) => {
         buffer += chunk
-        let newlinePos: number
-        while ((newlinePos = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, newlinePos).trim()
-          buffer = buffer.slice(newlinePos + 1)
-          if (line.length === 0) continue
+        const [objects, remaining] = extractJsonObjects(buffer)
+        buffer = remaining
+        for (const obj of objects) {
           try {
-            const a = parseSingleAttackThreat(line, usedIds)
+            const a = parseSingleAttackThreat(obj, usedIds)
             usedIds.push(a.id)
             out.push(a)
             onAttackThreat(a)
-          } catch { /* skip incomplete/invalid lines */ }
+          } catch { /* skip invalid */ }
         }
       }
     )
-    const remaining = buffer.trim()
-    if (remaining.length > 0) {
-      try {
-        const a = parseSingleAttackThreat(remaining, usedIds)
-        usedIds.push(a.id)
-        out.push(a)
-        onAttackThreat(a)
-      } catch { /* skip */ }
-    }
     return out
   }
 
