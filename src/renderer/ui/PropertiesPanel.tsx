@@ -168,7 +168,16 @@ function ComponentFields({ component, zones, onUpdate }: {
       </label>
       <label style={labelStyle(t)}>
         Zone
-        <select style={{ ...inputStyle(t), cursor: 'pointer' }} value={component.zoneId} onChange={e => onUpdate({ ...component, zoneId: e.target.value })} aria-label="Zone">
+        <select
+          style={{ ...inputStyle(t), cursor: 'pointer' }}
+          value={component.zoneId ?? ''}
+          onChange={e => {
+            const val = e.target.value
+            onUpdate(val ? { ...component, zoneId: val } : { ...component, zoneId: undefined })
+          }}
+          aria-label="Zone"
+        >
+          <option value="">— no zone —</option>
           {zones.map(z => (
             <option key={z.id} value={z.id}>{z.name}</option>
           ))}

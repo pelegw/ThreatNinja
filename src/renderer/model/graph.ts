@@ -28,7 +28,7 @@ export const ComponentSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.nativeEnum(ComponentType),
-  zoneId: z.string(),
+  zoneId: z.string().optional(),
   icon: z.string().optional(),
   position: PositionSchema.optional()
 })

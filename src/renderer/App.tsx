@@ -127,6 +127,7 @@ export default function App(): JSX.Element {
     if (result.cancelled || result.content === undefined) return
     try {
       const payload = parseFilePayload(result.content)
+      skipNextDirtyRef.current = true
       setGraphWithHistory(payload.graph)
       setThreats(payload.threats ?? null)
       setAttackThreats(payload.attackThreats ?? null)
@@ -377,6 +378,15 @@ export default function App(): JSX.Element {
     }
   }, [setGraphWithHistory, graphRef])
 
+  const handleAddComponentWithoutZone = useCallback(() => {
+    const g = graphRef.current
+    const allIds = [...g.zones.map(z => z.id), ...g.components.map(c => c.id), ...g.flows.map(f => f.id)]
+    const id = nextId('c', allIds)
+    setGraphWithHistory({ ...g, components: [...g.components, { id, name: 'New Component', type: ComponentType.Process }] })
+    setSelectedElementId(id)
+    setIsPickingZone(false)
+  }, [setGraphWithHistory, graphRef])
+
   const handleDeleteElement = useCallback((elementId: string) => {
     const g = graphRef.current
     const zone = g.zones.find(z => z.id === elementId)
@@ -452,7 +462,7 @@ export default function App(): JSX.Element {
     if (isInitialRender.current) { isInitialRender.current = false; return }
     if (skipNextDirtyRef.current) { skipNextDirtyRef.current = false; return }
     setIsDirty(true)
-  }, [graph, threats])
+  }, [graph, threats, attackThreats])
 
   useEffect(() => {
     const fp = currentFilePathRef.current
@@ -579,6 +589,7 @@ export default function App(): JSX.Element {
           onStartFlow={() => { setFlowDraft({ stage: 'source' }); setIsPickingZone(false) }}
           onCancelFlow={() => setFlowDraft(null)}
           onCancelPickZone={() => setIsPickingZone(false)}
+          onAddComponentWithoutZone={handleAddComponentWithoutZone}
           flowDraft={flowDraft}
           isPickingZone={isPickingZone}
         />

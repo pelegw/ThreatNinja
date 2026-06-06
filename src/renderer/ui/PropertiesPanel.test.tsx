@@ -151,6 +151,19 @@ describe('PropertiesPanel — Component', () => {
     expect(screen.getByRole('option', { name: 'DMZ' })).toBeInTheDocument()
   })
 
+  it('offers a "— no zone —" option in the zone selector', () => {
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={noop} onClose={noop} />)
+    expect(screen.getByRole('option', { name: /no zone/i })).toBeInTheDocument()
+  })
+
+  it('calls onUpdate with zoneId undefined when "— no zone —" is selected', () => {
+    const onUpdate = vi.fn()
+    render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={onUpdate} onClose={noop} />)
+    fireEvent.change(screen.getByRole('combobox', { name: /zone/i }), { target: { value: '' } })
+    const updated = onUpdate.mock.calls[0]?.[0].components.find((c: { id: string }) => c.id === 'c1')
+    expect(updated.zoneId).toBeUndefined()
+  })
+
   it('calls onUpdate when component name changes', () => {
     const onUpdate = vi.fn()
     render(<PropertiesPanel graph={graph} elementId="c1" onUpdate={onUpdate} onClose={noop} />)

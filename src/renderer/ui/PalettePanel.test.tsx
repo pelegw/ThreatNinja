@@ -82,6 +82,18 @@ describe('PalettePanel — picking zone for component', () => {
     render(<PalettePanel zones={zones} onAddZone={noop} onAddComponent={noop} onStartFlow={noop} onCancelFlow={noop} onCancelPickZone={noop} flowDraft={null} isPickingZone />)
     expect(screen.queryByRole('button', { name: /add zone/i })).not.toBeInTheDocument()
   })
+
+  it('shows a "Place without a zone" button when isPickingZone is true', () => {
+    render(<PalettePanel zones={zones} onAddZone={noop} onAddComponent={noop} onStartFlow={noop} onCancelFlow={noop} onCancelPickZone={noop} onAddComponentWithoutZone={noop} flowDraft={null} isPickingZone />)
+    expect(screen.getByRole('button', { name: /without a zone/i })).toBeInTheDocument()
+  })
+
+  it('calls onAddComponentWithoutZone when "Place without a zone" is clicked', () => {
+    const onAddComponentWithoutZone = vi.fn()
+    render(<PalettePanel zones={zones} onAddZone={noop} onAddComponent={noop} onStartFlow={noop} onCancelFlow={noop} onCancelPickZone={noop} onAddComponentWithoutZone={onAddComponentWithoutZone} flowDraft={null} isPickingZone />)
+    fireEvent.click(screen.getByRole('button', { name: /without a zone/i }))
+    expect(onAddComponentWithoutZone).toHaveBeenCalled()
+  })
 })
 
 describe('PalettePanel — flow drawing: select source', () => {

@@ -21,7 +21,7 @@ export const toElements = (graph: Graph): ElementDefinition[] => {
       data: {
         id: component.id,
         label: `${component.name}\n${component.id}`,
-        ...(lineZoneIds.has(component.zoneId) ? {} : { parent: component.zoneId }),
+        ...(component.zoneId !== undefined && !lineZoneIds.has(component.zoneId) ? { parent: component.zoneId } : {}),
         type: component.type,
         cyShape: cyShapeFor(component.type),
         ...(component.icon !== undefined ? { icon: component.icon } : {})

@@ -283,6 +283,14 @@ describe('toElements', () => {
     expect(componentEl?.data.parent).toBe('z1')
   })
 
+  it('omits parent on a component with no zoneId (unzoned component)', () => {
+    const graph = makeGraph({
+      components: [{ id: 'c1', name: 'API', type: ComponentType.Process }]
+    })
+    const el = toElements(graph).find(e => e.data.id === 'c1')
+    expect(el?.data).not.toHaveProperty('parent')
+  })
+
   it('produces nodes before edges (zones + components first, flows last)', () => {
     const graph = makeGraph({
       zones: [{ id: 'z1', name: 'DMZ' }],

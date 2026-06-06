@@ -13,11 +13,12 @@ type Props = {
   onStartFlow: () => void
   onCancelFlow: () => void
   onCancelPickZone: () => void
+  onAddComponentWithoutZone?: () => void
   flowDraft: FlowDraft
   isPickingZone: boolean
 }
 
-export default function PalettePanel({ zones, onAddZone, onAddComponent, onStartFlow, onCancelFlow, onCancelPickZone, flowDraft, isPickingZone }: Props): JSX.Element {
+export default function PalettePanel({ zones, onAddZone, onAddComponent, onStartFlow, onCancelFlow, onCancelPickZone, onAddComponentWithoutZone, flowDraft, isPickingZone }: Props): JSX.Element {
   const t = useTheme()
 
   if (isPickingZone) {
@@ -25,6 +26,9 @@ export default function PalettePanel({ zones, onAddZone, onAddComponent, onStart
       <div style={containerStyle}>
         <h2 style={sectionTitleStyle(t)}>Add Component</h2>
         <p style={{ fontSize: 13, color: t.textMuted, margin: 0, lineHeight: 1.5 }}>Click a zone on the canvas to place the new component.</p>
+        {onAddComponentWithoutZone !== undefined && (
+          <button onClick={onAddComponentWithoutZone} style={secondaryBtnStyle(t)}>Place without a zone</button>
+        )}
         <button onClick={onCancelPickZone} style={secondaryBtnStyle(t)}>Cancel</button>
       </div>
     )

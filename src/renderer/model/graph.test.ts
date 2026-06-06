@@ -112,10 +112,9 @@ describe('Component', () => {
     ).toThrow()
   })
 
-  it('throws when zoneId is missing', () => {
-    expect(() =>
-      ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process })
-    ).toThrow()
+  it('accepts a component with no zoneId (unzoned)', () => {
+    const result = ComponentSchema.parse({ id: 'c1', name: 'Web Server', type: ComponentType.Process })
+    expect(result.zoneId).toBeUndefined()
   })
 
   it('strips unknown fields', () => {

@@ -39,15 +39,23 @@ vi.mock('./llm/strideAnalysis', async (importOriginal) => {
   return { ...actual, generateThreats: vi.fn(), generateThreatsStreaming: vi.fn() }
 })
 
+vi.mock('./llm/attackAnalysis', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./llm/attackAnalysis')>()
+  return { ...actual, generateAttackThreatsStreaming: vi.fn() }
+})
+
 import { generateGraphFromDescription } from './llm/nlToGraph'
 import { generateThreatsStreaming } from './llm/strideAnalysis'
+import { generateAttackThreatsStreaming } from './llm/attackAnalysis'
 import { StrideCategory } from './model/threats'
+import { AttackTactic } from './model/attackThreats'
 
 const mockElectronAPI = {
   saveGraph: vi.fn().mockResolvedValue({ cancelled: false, filePath: '/test/diagram.tninja' }),
   loadGraph: vi.fn().mockResolvedValue({ cancelled: true }),
   saveSettings: vi.fn().mockResolvedValue(undefined),
-  loadSettings: vi.fn().mockResolvedValue(null)
+  loadSettings: vi.fn().mockResolvedValue(null),
+  showMessageBox: vi.fn().mockResolvedValue(1), // default: Discard
 }
 
 const openMenu = (name: string) => {
@@ -702,5 +710,73 @@ describe('App — ATT&CK', () => {
     render(<App />)
     expect(screen.getByRole('button', { name: /^Threats$/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^ATT&CK$/i })).toBeInTheDocument()
+  })
+})
+
+describe('App — New document dialog', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'electronAPI', { value: mockElectronAPI, writable: true, configurable: true })
+    vi.clearAllMocks()
+    mockElectronAPI.loadSettings.mockResolvedValue(null)
+    mockElectronAPI.showMessageBox.mockResolvedValue(1) // Discard by default
+  })
+
+  it('resets immediately without a dialog when there are no unsaved changes', async () => {
+    render(<App />)
+    clickMenu('File', /^new$/i)
+    await waitFor(() => expect(screen.queryByDisplayValue('New Zone')).not.toBeInTheDocument())
+    expect(mockElectronAPI.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('does not mark the document as dirty immediately after loading a file', async () => {
+    const loadedFile = JSON.stringify({
+      version: '1',
+      graph: { id: 'g1', name: 'Loaded', zones: [{ id: 'z1', name: 'Zone' }], components: [], flows: [] }
+    })
+    mockElectronAPI.loadGraph.mockResolvedValue({ cancelled: false, content: loadedFile, filePath: '/f.tninja' })
+    render(<App />)
+    clickMenu('File', /^open$/i)
+    await waitFor(() => expect(mockElectronAPI.loadGraph).toHaveBeenCalled())
+    // Wait for the status indicator to reach a stable "Saved" state — if the dirty effect
+    // fires falsely after loading, it would show "Unsaved changes" instead and this times out.
+    await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument())
+    clickMenu('File', /^new$/i)
+    await waitFor(() => expect(screen.getByText('Not saved')).toBeInTheDocument())
+    expect(mockElectronAPI.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('shows the save dialog when New is clicked after a graph change', async () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /add zone/i }))
+    await waitFor(() => screen.getByDisplayValue('New Zone'))
+    clickMenu('File', /^new$/i)
+    await waitFor(() => expect(mockElectronAPI.showMessageBox).toHaveBeenCalled())
+  })
+
+  it('shows the save dialog when New is clicked after ATT&CK analysis results arrive', async () => {
+    const strideThreats = [
+      { id: 't1', title: 'SQL Injection', category: StrideCategory.Tampering, description: 'd', affectedId: 'c1', severity: 'high' as const }
+    ]
+    const attackThreats = [{
+      id: 'a1', tactic: AttackTactic.InitialAccess, techniqueId: 'T1190',
+      techniqueName: 'Exploit Public-Facing Application', title: 'Exploit API',
+      description: 'd', affectedId: 'c1', severity: 'high' as const, relatedThreatIds: [],
+    }]
+    vi.mocked(generateThreatsStreaming).mockImplementation(async (_, __, onThreat) => {
+      strideThreats.forEach(onThreat); return strideThreats
+    })
+    vi.mocked(generateAttackThreatsStreaming).mockImplementation(async (_, __, ___, onAttack) => {
+      attackThreats.forEach(onAttack); return attackThreats
+    })
+    render(<App />)
+    clickAnalyze(/^STRIDE$/i)
+    await waitFor(() => screen.getByDisplayValue('SQL Injection'))
+    clickMenu('File', /^save$/i)
+    await waitFor(() => expect(mockElectronAPI.saveGraph).toHaveBeenCalled())
+    vi.clearAllMocks()
+    clickAnalyze(/ATT&CK/i)
+    await waitFor(() => screen.getByDisplayValue('Exploit API'))
+    clickMenu('File', /^new$/i)
+    await waitFor(() => expect(mockElectronAPI.showMessageBox).toHaveBeenCalled())
   })
 })
